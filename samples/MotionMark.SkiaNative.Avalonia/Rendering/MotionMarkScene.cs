@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Avalonia;
 using Avalonia.Media;
+using SkiaNativePath = global::SkiaNative.Avalonia.SkiaNativePath;
 using SkiaNativePathCommand = global::SkiaNative.Avalonia.SkiaNativePathCommand;
 
 namespace MotionMark.SkiaNative.AvaloniaApp.Rendering;
@@ -68,8 +70,17 @@ internal sealed class MotionMarkScene
             return snapshot;
         }
 
+        var previous = _snapshot;
         _snapshot = BuildSnapshot(size);
+        previous?.Release();
         return _snapshot;
+    }
+
+    public void ClearSnapshot()
+    {
+        var previous = _snapshot;
+        _snapshot = null;
+        previous?.Release();
     }
 
     private MotionMarkSceneSnapshot BuildSnapshot(Size size)
@@ -117,7 +128,7 @@ internal sealed class MotionMarkScene
             var finalize = element.Split || i == elements.Length - 1;
             if (finalize)
             {
-                pathRuns.Add(new MotionMarkPathRun(commands.ToArray(), element.Color, element.Width));
+                pathRuns.Add(new MotionMarkPathRun(SkiaNativePath.Create(CollectionsMarshal.AsSpan(commands)), element.Color, element.Width));
                 commands.Clear();
                 pathStarted = false;
             }
@@ -279,6 +290,45 @@ internal sealed class MotionMarkScene
     }
 }
 
-internal sealed record MotionMarkSceneSnapshot(Size Size, int Version, int ElementCount, MotionMarkPathRun[] PathRuns);
+internal sealed class MotionMarkSceneSnapshot
+{
+    private int _referenceCount = 1;
 
-internal readonly record struct MotionMarkPathRun(SkiaNativePathCommand[] Commands, Color Color, double Width);
+    public MotionMarkSceneSnapshot(Size size, int version, int elementCount, MotionMarkPathRun[] pathRuns)
+    {
+        Size = size;
+        Version = version;
+        ElementCount = elementCount;
+        PathRuns = pathRuns;
+    }
+
+    public Size Size { get; }
+    public int Version { get; }
+    public int ElementCount { get; }
+    public MotionMarkPathRun[] PathRuns { get; }
+
+    public MotionMarkSceneSnapshot AddReference()
+    {
+        if (Interlocked.Increment(ref _referenceCount) <= 1)
+        {
+            throw new ObjectDisposedException(nameof(MotionMarkSceneSnapshot));
+        }
+
+        return this;
+    }
+
+    public void Release()
+    {
+        if (Interlocked.Decrement(ref _referenceCount) != 0)
+        {
+            return;
+        }
+
+        foreach (var pathRun in PathRuns)
+        {
+            pathRun.Path.Dispose();
+        }
+    }
+}
+
+internal readonly record struct MotionMarkPathRun(SkiaNativePath Path, Color Color, double Width);

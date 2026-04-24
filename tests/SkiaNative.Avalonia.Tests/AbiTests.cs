@@ -43,6 +43,32 @@ public sealed class AbiTests
     }
 
     [Fact]
+    public void DirectPathResource_CanBeReusedByCommandBuffer()
+    {
+        var nativeLibraryPath = FindNativeLibrary();
+        Assert.SkipUnless(nativeLibraryPath is not null, "Native dylib artifacts are required for direct path resource smoke tests.");
+
+        NativeLibraryResolver.Configure(new SkiaNativeOptions
+        {
+            NativeLibraryPath = nativeLibraryPath
+        });
+
+        var commands = new[]
+        {
+            SkiaNativePathCommand.MoveTo(0, 0),
+            SkiaNativePathCommand.LineTo(100, 0)
+        };
+
+        using var path = SkiaNativePath.Create(commands);
+        using var commandBuffer = new CommandBuffer(1);
+        commandBuffer.StrokeNativePath(path.NativeHandle, Colors.Red, 2, NativeStrokeCap.Round, NativeStrokeJoin.Round, 10);
+
+        Assert.Equal(1, commandBuffer.CommandCount);
+        Assert.Equal(NativeCommandKind.DrawPath, commandBuffer.Commands[0].Kind);
+        Assert.Equal(path.NativeHandle.DangerousGetHandle(), commandBuffer.Commands[0].Resource0);
+    }
+
+    [Fact]
     public void NativeGradientStopLayout_IsStableEnoughForCAbi()
     {
         Assert.Equal(20, Marshal.SizeOf<NativeGradientStop>());

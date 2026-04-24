@@ -192,6 +192,7 @@ internal sealed class NativeDrawingContext : IDrawingContextImpl, IDrawingContex
         }
         finally
         {
+            _commands.Dispose();
             _session.Dispose();
             _platformSession?.Dispose();
 

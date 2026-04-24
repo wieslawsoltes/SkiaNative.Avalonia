@@ -98,6 +98,7 @@ internal sealed class MotionMarkSurface : Control
         _lastFrameTimestamp = null;
         _frameAccumulatorMs = 0;
         _statsFrameCount = 0;
+        _scene.ClearSnapshot();
         Interlocked.Exchange(ref _renderTicksAccumulator, 0);
         Interlocked.Exchange(ref _renderFrameCount, 0);
         base.OnDetachedFromVisualTree(e);
@@ -207,13 +208,14 @@ internal sealed class MotionMarkSurface : Control
         {
             _owner = owner;
             _bounds = bounds;
-            _snapshot = snapshot;
+            _snapshot = snapshot.AddReference();
         }
 
         public Rect Bounds => _bounds;
 
         public void Dispose()
         {
+            _snapshot.Release();
         }
 
         public bool HitTest(Point p) => _bounds.Contains(p);
@@ -233,7 +235,7 @@ internal sealed class MotionMarkSurface : Control
                 foreach (var pathRun in _snapshot.PathRuns)
                 {
                     canvas.StrokePath(
-                        pathRun.Commands,
+                        pathRun.Path,
                         pathRun.Color,
                         pathRun.Width,
                         SkiaNativeStrokeCap.Round,

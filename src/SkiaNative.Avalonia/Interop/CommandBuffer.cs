@@ -2,6 +2,8 @@ using Avalonia;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using SkiaNative.Avalonia.Geometry;
@@ -10,7 +12,7 @@ using SkiaNative.Avalonia.Text;
 
 namespace SkiaNative.Avalonia;
 
-internal sealed class CommandBuffer
+internal sealed class CommandBuffer : IDisposable
 {
     private const uint BitmapSamplingMask = 0xFu;
     private const uint BitmapBlendShift = 8;
@@ -19,7 +21,9 @@ internal sealed class CommandBuffer
     private const uint ShapeAntiAliasFlag = 1u << 16;
     private const uint BoxShadowInsetFlag = 1u << 0;
 
-    private readonly List<NativeCommand> _commands;
+    private NativeCommand[] _commands;
+    private int _commandCount;
+    private bool _disposed;
     private readonly List<SafeHandle> _resources = new();
     private readonly List<NativeShaderHandle> _ownedShaders = new();
     private readonly List<NativeStrokeHandle> _ownedStrokes = new();
@@ -28,22 +32,23 @@ internal sealed class CommandBuffer
 
     public CommandBuffer(int capacity)
     {
-        _commands = new List<NativeCommand>(Math.Max(capacity, 16));
+        _commands = ArrayPool<NativeCommand>.Shared.Rent(Math.Max(capacity, 16));
     }
 
-    public IReadOnlyList<NativeCommand> Commands => _commands;
+    public int CommandCount => _commandCount;
+    public IReadOnlyList<NativeCommand> Commands => new ArraySegment<NativeCommand>(_commands, 0, _commandCount);
 
-    public void Save() => _commands.Add(new NativeCommand { Kind = NativeCommandKind.Save });
+    public void Save() => AddCommand(new NativeCommand { Kind = NativeCommandKind.Save });
 
-    public void Restore() => _commands.Add(new NativeCommand { Kind = NativeCommandKind.Restore });
+    public void Restore() => AddCommand(new NativeCommand { Kind = NativeCommandKind.Restore });
 
-    public void SetTransform(Matrix matrix) => _commands.Add(new NativeCommand
+    public void SetTransform(Matrix matrix) => AddCommand(new NativeCommand
     {
         Kind = NativeCommandKind.SetTransform,
         Matrix = matrix.ToNative()
     });
 
-    public void Clear(Color color) => _commands.Add(new NativeCommand
+    public void Clear(Color color) => AddCommand(new NativeCommand
     {
         Kind = NativeCommandKind.Clear,
         Fill = color.ToNative()
@@ -57,7 +62,7 @@ internal sealed class CommandBuffer
         }
 
         AddStroke(stroke);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.DrawLine,
             Flags = CreateShapeFlags(0u, renderOptions),
@@ -79,7 +84,7 @@ internal sealed class CommandBuffer
             return;
         }
 
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.DrawLine,
             Flags = CreateShapeFlags(0u, renderOptions),
@@ -100,7 +105,7 @@ internal sealed class CommandBuffer
             return;
         }
 
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.DrawRect,
             Flags = CreateShapeFlags(1u, renderOptions),
@@ -128,7 +133,7 @@ internal sealed class CommandBuffer
         if (fill.HasPaint && stroke.HasStroke && fill.Shader is null && stroke.Paint.Shader is null)
         {
             AddStroke(stroke);
-            _commands.Add(new NativeCommand
+            AddCommand(new NativeCommand
             {
                 Kind = kind,
                 Flags = CreateShapeFlags(3u, renderOptions),
@@ -173,7 +178,7 @@ internal sealed class CommandBuffer
 
             var color = shadow.Color.ToNative();
             var radii = rect.RadiiTopLeft;
-            _commands.Add(new NativeCommand
+            AddCommand(new NativeCommand
             {
                 Kind = NativeCommandKind.DrawBoxShadow,
                 Flags = CreateShapeFlags(shadow.IsInset ? BoxShadowInsetFlag : 0u, renderOptions),
@@ -253,7 +258,24 @@ internal sealed class CommandBuffer
 
         _resources.Add(path);
         _ownedPaths.Add(path);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
+        {
+            Kind = NativeCommandKind.DrawPath,
+            Flags = CreateShapeFlags(1u, renderOptions),
+            Resource0 = path.DangerousGetHandle(),
+            Fill = color.ToNative()
+        });
+    }
+
+    public void FillNativePath(NativePathHandle path, Color color, RenderOptions renderOptions = default)
+    {
+        if (path.IsInvalid || color.A == 0)
+        {
+            return;
+        }
+
+        _resources.Add(path);
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.DrawPath,
             Flags = CreateShapeFlags(1u, renderOptions),
@@ -288,19 +310,50 @@ internal sealed class CommandBuffer
             return;
         }
 
-        var stroke = NativeMethods.StrokeCreate(cap, join, (float)Math.Max(0, miterLimit), null, 0, 0);
+        var stroke = NativeStrokeCache.Get(cap, join, miterLimit, []);
         if (stroke.IsInvalid)
         {
             path.Dispose();
-            stroke.Dispose();
             return;
         }
 
         _resources.Add(path);
         _ownedPaths.Add(path);
         _resources.Add(stroke);
-        _ownedStrokes.Add(stroke);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
+        {
+            Kind = NativeCommandKind.DrawPath,
+            Flags = CreateShapeFlags(2u, renderOptions),
+            Resource0 = path.DangerousGetHandle(),
+            Resource2 = stroke.DangerousGetHandle(),
+            Stroke = color.ToNative(),
+            StrokeThickness = (float)strokeWidth
+        });
+    }
+
+    public void StrokeNativePath(
+        NativePathHandle path,
+        Color color,
+        double strokeWidth,
+        NativeStrokeCap cap,
+        NativeStrokeJoin join,
+        double miterLimit,
+        RenderOptions renderOptions = default)
+    {
+        if (path.IsInvalid || color.A == 0 || strokeWidth <= 0)
+        {
+            return;
+        }
+
+        var stroke = NativeStrokeCache.Get(cap, join, miterLimit, []);
+        if (stroke.IsInvalid)
+        {
+            return;
+        }
+
+        _resources.Add(path);
+        _resources.Add(stroke);
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.DrawPath,
             Flags = CreateShapeFlags(2u, renderOptions),
@@ -323,7 +376,7 @@ internal sealed class CommandBuffer
     {
         var flags = bounds.HasValue ? 1u : 0u;
         var rect = bounds.GetValueOrDefault();
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.SaveLayer,
             Flags = flags,
@@ -345,7 +398,7 @@ internal sealed class CommandBuffer
         }
 
         AddShader(paint);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.PushOpacityMaskLayer,
             Flags = 1u,
@@ -368,7 +421,7 @@ internal sealed class CommandBuffer
 
         if (_opacityMaskLayers.Pop())
         {
-            _commands.Add(new NativeCommand { Kind = NativeCommandKind.PopOpacityMaskLayer });
+            AddCommand(new NativeCommand { Kind = NativeCommandKind.PopOpacityMaskLayer });
         }
         else
         {
@@ -385,7 +438,7 @@ internal sealed class CommandBuffer
 
         var bitmap = native.NativeBitmap;
         _resources.Add(bitmap);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.DrawBitmap,
             Flags = CreateBitmapFlags(renderOptions, sourceRect, destRect),
@@ -484,7 +537,7 @@ internal sealed class CommandBuffer
 
         AddShader(fill);
         _resources.Add(handle);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.DrawGlyphRun,
             Resource0 = handle.DangerousGetHandle(),
@@ -493,7 +546,7 @@ internal sealed class CommandBuffer
         });
     }
 
-    public void PushClip(Rect rect) => _commands.Add(new NativeCommand
+    public void PushClip(Rect rect) => AddCommand(new NativeCommand
     {
         Kind = NativeCommandKind.PushClipRect,
         X0 = (float)rect.X,
@@ -505,7 +558,7 @@ internal sealed class CommandBuffer
     public void PushClip(RoundedRect rect)
     {
         var radii = rect.RadiiTopLeft;
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = radii.X > 0 || radii.Y > 0 ? NativeCommandKind.PushClipRoundRect : NativeCommandKind.PushClipRect,
             X0 = (float)rect.Rect.X,
@@ -557,7 +610,7 @@ internal sealed class CommandBuffer
 
         _resources.Add(path);
         _ownedPaths.Add(path);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.PushClipPath,
             Resource0 = path.DangerousGetHandle()
@@ -572,7 +625,7 @@ internal sealed class CommandBuffer
         }
 
         _resources.Add(path);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.PushClipPath,
             Resource0 = path.DangerousGetHandle()
@@ -592,7 +645,7 @@ internal sealed class CommandBuffer
         }
 
         _resources.Add(path);
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = NativeCommandKind.DrawPath,
             Flags = CreateShapeFlags(flags, renderOptions),
@@ -617,7 +670,7 @@ internal sealed class CommandBuffer
             AddShader(paint);
         }
 
-        _commands.Add(new NativeCommand
+        AddCommand(new NativeCommand
         {
             Kind = kind,
             Flags = CreateShapeFlags(flags, renderOptions),
@@ -648,44 +701,82 @@ internal sealed class CommandBuffer
 
     public unsafe CommandBufferFlushResult Flush(NativeSessionHandle session)
     {
-        if (_commands.Count == 0)
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_commandCount == 0)
         {
             return new CommandBufferFlushResult(0, 0, TimeSpan.Zero, 0);
         }
 
-        var commandCount = _commands.Count;
-        var span = CollectionsMarshal.AsSpan(_commands);
-        fixed (NativeCommand* ptr = span)
+        var commandCount = _commandCount;
+        fixed (NativeCommand* ptr = _commands)
         {
             var stopwatch = Stopwatch.StartNew();
             var nativeResult = 0;
             try
             {
-                nativeResult = NativeMethods.SessionFlushCommands(session, ptr, span.Length);
+                nativeResult = NativeMethods.SessionFlushCommands(session, ptr, commandCount);
                 return new CommandBufferFlushResult(commandCount, 1, stopwatch.Elapsed, nativeResult);
             }
             finally
             {
                 stopwatch.Stop();
-                _commands.Clear();
-                _resources.Clear();
-                foreach (var shader in _ownedShaders)
-                {
-                    shader.Dispose();
-                }
-                _ownedShaders.Clear();
-                foreach (var stroke in _ownedStrokes)
-                {
-                    stroke.Dispose();
-                }
-                _ownedStrokes.Clear();
-                foreach (var path in _ownedPaths)
-                {
-                    path.Dispose();
-                }
-                _ownedPaths.Clear();
+                Clear();
             }
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        Clear();
+        ArrayPool<NativeCommand>.Shared.Return(_commands);
+        _commands = [];
+        _disposed = true;
+    }
+
+    private void Clear()
+    {
+        _commandCount = 0;
+        _resources.Clear();
+        foreach (var shader in _ownedShaders)
+        {
+            shader.Dispose();
+        }
+        _ownedShaders.Clear();
+        foreach (var stroke in _ownedStrokes)
+        {
+            stroke.Dispose();
+        }
+        _ownedStrokes.Clear();
+        foreach (var path in _ownedPaths)
+        {
+            path.Dispose();
+        }
+        _ownedPaths.Clear();
+    }
+
+    private void AddCommand(NativeCommand command)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_commandCount == _commands.Length)
+        {
+            GrowCommands();
+        }
+
+        _commands[_commandCount++] = command;
+    }
+
+    private void GrowCommands()
+    {
+        var next = ArrayPool<NativeCommand>.Shared.Rent(_commands.Length * 2);
+        Array.Copy(_commands, next, _commandCount);
+        ArrayPool<NativeCommand>.Shared.Return(_commands);
+        _commands = next;
     }
 
     private void AddStroke(NativeStrokeSource stroke)
@@ -697,7 +788,10 @@ internal sealed class CommandBuffer
         }
 
         _resources.Add(stroke.Stroke);
-        _ownedStrokes.Add(stroke.Stroke);
+        if (stroke.OwnsStroke)
+        {
+            _ownedStrokes.Add(stroke.Stroke);
+        }
     }
 }
 
@@ -743,15 +837,17 @@ internal readonly struct NativePaintSource
 
 internal readonly struct NativeStrokeSource
 {
-    public NativeStrokeSource(NativePaintSource paint, double thickness, NativeStrokeHandle? stroke)
+    public NativeStrokeSource(NativePaintSource paint, double thickness, NativeStrokeHandle? stroke, bool ownsStroke)
     {
         Paint = paint;
         Thickness = (float)thickness;
         Stroke = stroke;
+        OwnsStroke = ownsStroke;
         HasStroke = paint.HasPaint && thickness > 0 && stroke is { IsInvalid: false };
     }
 
     public bool HasStroke { get; }
+    public bool OwnsStroke { get; }
     public NativePaintSource Paint { get; }
     public NativeColor Color => Paint.Color;
     public NativeShaderHandle? Shader => Paint.Shader;
@@ -759,6 +855,94 @@ internal readonly struct NativeStrokeSource
     public float Thickness { get; }
     public NativeStrokeHandle? Stroke { get; }
     public nint StrokeHandle => Stroke is null ? 0 : Stroke.DangerousGetHandle();
+}
+
+internal static class NativeStrokeCache
+{
+    private static readonly ConcurrentDictionary<StrokeStyleKey, NativeStrokeHandle> s_cache = new(new StrokeStyleKeyComparer());
+
+    public static NativeStrokeHandle Get(
+        NativeStrokeCap cap,
+        NativeStrokeJoin join,
+        double miterLimit,
+        ReadOnlySpan<float> dashes,
+        float dashOffset = 0)
+    {
+        var key = StrokeStyleKey.Create(cap, join, miterLimit, dashes, dashOffset);
+        return s_cache.GetOrAdd(key, static key => CreateStroke(key));
+    }
+
+    private static unsafe NativeStrokeHandle CreateStroke(StrokeStyleKey key)
+    {
+        if (key.Dashes.Length == 0)
+        {
+            return NativeMethods.StrokeCreate(key.Cap, key.Join, key.MiterLimit, null, 0, 0);
+        }
+
+        fixed (float* ptr = key.Dashes)
+        {
+            return NativeMethods.StrokeCreate(key.Cap, key.Join, key.MiterLimit, ptr, key.Dashes.Length, key.DashOffset);
+        }
+    }
+
+    private readonly record struct StrokeStyleKey(
+        NativeStrokeCap Cap,
+        NativeStrokeJoin Join,
+        float MiterLimit,
+        float[] Dashes,
+        float DashOffset)
+    {
+        public static StrokeStyleKey Create(
+            NativeStrokeCap cap,
+            NativeStrokeJoin join,
+            double miterLimit,
+            ReadOnlySpan<float> dashes,
+            float dashOffset)
+        {
+            var copiedDashes = dashes.IsEmpty ? [] : dashes.ToArray();
+            return new StrokeStyleKey(cap, join, (float)Math.Max(0, miterLimit), copiedDashes, dashOffset);
+        }
+    }
+
+    private sealed class StrokeStyleKeyComparer : IEqualityComparer<StrokeStyleKey>
+    {
+        public bool Equals(StrokeStyleKey x, StrokeStyleKey y)
+        {
+            if (x.Cap != y.Cap ||
+                x.Join != y.Join ||
+                x.MiterLimit != y.MiterLimit ||
+                x.DashOffset != y.DashOffset ||
+                x.Dashes.Length != y.Dashes.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < x.Dashes.Length; i++)
+            {
+                if (x.Dashes[i] != y.Dashes[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        public int GetHashCode(StrokeStyleKey key)
+        {
+            var hash = new HashCode();
+            hash.Add(key.Cap);
+            hash.Add(key.Join);
+            hash.Add(key.MiterLimit);
+            hash.Add(key.DashOffset);
+            foreach (var dash in key.Dashes)
+            {
+                hash.Add(dash);
+            }
+
+            return hash.ToHashCode();
+        }
+    }
 }
 
 internal static unsafe class BrushUtil
@@ -862,15 +1046,25 @@ internal static unsafe class BrushUtil
             return false;
         }
 
-        var strokeHandle = CreateStrokeStyle(pen);
-        if (strokeHandle is null || strokeHandle.IsInvalid)
+        var strokeHandle = GetCachedStrokeStyle(pen);
+        if (strokeHandle.IsInvalid)
         {
-            strokeHandle?.Dispose();
             return false;
         }
 
-        stroke = new NativeStrokeSource(paint, pen.Thickness, strokeHandle);
+        stroke = new NativeStrokeSource(paint, pen.Thickness, strokeHandle, ownsStroke: false);
         return stroke.HasStroke;
+    }
+
+    internal static NativeStrokeHandle GetCachedStrokeStyle(IPen pen)
+    {
+        var dashes = CreateDashes(pen, out var dashOffset);
+        return NativeStrokeCache.Get(
+            ToNativeStrokeCap(pen.LineCap),
+            ToNativeStrokeJoin(pen.LineJoin),
+            pen.MiterLimit,
+            dashes,
+            dashOffset);
     }
 
     internal static NativeStrokeHandle? CreateStrokeStyle(IPen pen)

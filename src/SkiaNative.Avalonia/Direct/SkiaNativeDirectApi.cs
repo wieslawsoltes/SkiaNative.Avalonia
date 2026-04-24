@@ -108,6 +108,25 @@ public sealed class SkiaNativeDirectCanvas : IDisposable
             miterLimit);
     }
 
+    public void StrokePath(
+        SkiaNativePath path,
+        Color color,
+        double strokeWidth,
+        SkiaNativeStrokeCap cap = SkiaNativeStrokeCap.Butt,
+        SkiaNativeStrokeJoin join = SkiaNativeStrokeJoin.Miter,
+        double miterLimit = 10)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ThrowIfDisposed();
+        _commands.StrokeNativePath(
+            path.NativeHandle,
+            color,
+            strokeWidth,
+            (NativeStrokeCap)cap,
+            (NativeStrokeJoin)join,
+            miterLimit);
+    }
+
     public void FillPath(
         ReadOnlySpan<SkiaNativePathCommand> commands,
         Color color,
@@ -116,6 +135,13 @@ public sealed class SkiaNativeDirectCanvas : IDisposable
         ThrowIfDisposed();
         var nativeCommands = MemoryMarshal.Cast<SkiaNativePathCommand, NativePathCommand>(commands);
         _commands.FillSolidPath(nativeCommands, color, (NativePathFillRule)fillRule);
+    }
+
+    public void FillPath(SkiaNativePath path, Color color)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ThrowIfDisposed();
+        _commands.FillNativePath(path.NativeHandle, color);
     }
 
     public SkiaNativeDirectFlushResult Flush()
@@ -134,6 +160,7 @@ public sealed class SkiaNativeDirectCanvas : IDisposable
         }
 
         Flush();
+        _commands.Dispose();
         _disposed = true;
     }
 
@@ -148,6 +175,88 @@ public readonly record struct SkiaNativeDirectFlushResult(
     int NativeTransitionCount,
     TimeSpan FlushElapsed,
     int NativeResult);
+
+/// <summary>
+/// Reusable native Skia path resource for hot custom drawing paths.
+/// </summary>
+public sealed class SkiaNativePath : IDisposable
+{
+    private NativePathHandle? _handle;
+
+    private SkiaNativePath(NativePathHandle handle)
+    {
+        _handle = handle;
+    }
+
+    public bool IsDisposed => _handle is null;
+
+    internal NativePathHandle NativeHandle
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_handle is null, this);
+            return _handle;
+        }
+    }
+
+    public static unsafe SkiaNativePath Create(
+        ReadOnlySpan<SkiaNativePathCommand> commands,
+        SkiaNativePathFillRule fillRule = SkiaNativePathFillRule.NonZero)
+    {
+        var nativeCommands = MemoryMarshal.Cast<SkiaNativePathCommand, NativePathCommand>(commands);
+        NativePathHandle handle;
+        fixed (NativePathCommand* ptr = nativeCommands)
+        {
+            handle = NativeMethods.PathCreate(ptr, nativeCommands.Length, (NativePathFillRule)fillRule);
+        }
+
+        if (handle.IsInvalid)
+        {
+            handle.Dispose();
+            throw new InvalidOperationException("Native Skia path creation failed.");
+        }
+
+        return new SkiaNativePath(handle);
+    }
+
+    public static SkiaNativePath CreateRectangle(Rect rect, SkiaNativePathFillRule fillRule = SkiaNativePathFillRule.NonZero)
+    {
+        rect = rect.Normalize();
+        var handle = NativeMethods.PathCreateRect((float)rect.X, (float)rect.Y, (float)rect.Width, (float)rect.Height, (NativePathFillRule)fillRule);
+        if (handle.IsInvalid)
+        {
+            handle.Dispose();
+            throw new InvalidOperationException("Native Skia rectangle path creation failed.");
+        }
+
+        return new SkiaNativePath(handle);
+    }
+
+    public static SkiaNativePath CreateEllipse(Rect rect, SkiaNativePathFillRule fillRule = SkiaNativePathFillRule.NonZero)
+    {
+        rect = rect.Normalize();
+        var handle = NativeMethods.PathCreateEllipse((float)rect.X, (float)rect.Y, (float)rect.Width, (float)rect.Height, (NativePathFillRule)fillRule);
+        if (handle.IsInvalid)
+        {
+            handle.Dispose();
+            throw new InvalidOperationException("Native Skia ellipse path creation failed.");
+        }
+
+        return new SkiaNativePath(handle);
+    }
+
+    public void Dispose()
+    {
+        var handle = _handle;
+        if (handle is null)
+        {
+            return;
+        }
+
+        _handle = null;
+        handle.Dispose();
+    }
+}
 
 public enum SkiaNativeStrokeCap : uint
 {
