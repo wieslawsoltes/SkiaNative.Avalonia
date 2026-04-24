@@ -232,15 +232,10 @@ internal sealed class MotionMarkSurface : Control
                 canvas.FillRectangle(s_backgroundColor, _bounds);
                 DrawGrid(canvas, _bounds);
 
-                foreach (var pathRun in _snapshot.PathRuns)
-                {
-                    canvas.StrokePath(
-                        pathRun.Path,
-                        pathRun.Color,
-                        pathRun.Width,
-                        SkiaNativeStrokeCap.Round,
-                        SkiaNativeStrokeJoin.Round);
-                }
+                canvas.StrokePaths(
+                    _snapshot.PathRuns,
+                    SkiaNativeStrokeCap.Round,
+                    SkiaNativeStrokeJoin.Round);
 
                 canvas.Restore();
             }

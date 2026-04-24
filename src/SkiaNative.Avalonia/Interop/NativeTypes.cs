@@ -147,6 +147,52 @@ internal struct NativeCommand
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal struct NativePathStrokeCommand
+{
+    public nint Path;
+    public nint Stroke;
+    public nint Shader;
+    public NativeColor Color;
+    public float StrokeThickness;
+    public uint Flags;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativePathFillCommand
+{
+    public nint Path;
+    public nint Shader;
+    public NativeColor Color;
+    public uint Flags;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeGlyphRunCommand
+{
+    public nint GlyphRun;
+    public nint Shader;
+    public NativeColor Color;
+    public uint Flags;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeBitmapCommand
+{
+    public nint Bitmap;
+    public uint Flags;
+    public NativeColor Color;
+    public float X0;
+    public float Y0;
+    public float X1;
+    public float Y1;
+    public float X2;
+    public float Y2;
+    public float X3;
+    public float Y3;
+    public uint Reserved;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal struct NativeGlyphPosition
 {
     public float X;

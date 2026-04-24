@@ -75,6 +75,44 @@ typedef struct skn_command {
     skn_matrix_t matrix;
 } skn_command_t;
 
+typedef struct skn_path_stroke_command {
+    skn_path_t* path;
+    skn_stroke_t* stroke;
+    skn_shader_t* shader;
+    skn_color_t color;
+    float stroke_thickness;
+    uint32_t flags;
+} skn_path_stroke_command_t;
+
+typedef struct skn_path_fill_command {
+    skn_path_t* path;
+    skn_shader_t* shader;
+    skn_color_t color;
+    uint32_t flags;
+} skn_path_fill_command_t;
+
+typedef struct skn_glyph_run_command {
+    skn_glyph_run_t* glyph_run;
+    skn_shader_t* shader;
+    skn_color_t color;
+    uint32_t flags;
+} skn_glyph_run_command_t;
+
+typedef struct skn_bitmap_command {
+    skn_bitmap_t* bitmap;
+    uint32_t flags;
+    skn_color_t color;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+    float x2;
+    float y2;
+    float x3;
+    float y3;
+    uint32_t reserved;
+} skn_bitmap_command_t;
+
 typedef enum skn_gradient_spread_method {
     SKN_GRADIENT_SPREAD_PAD = 0,
     SKN_GRADIENT_SPREAD_REFLECT = 1,
@@ -149,6 +187,10 @@ SKN_EXPORT skn_session_t* skn_session_begin_metal(skn_context_t* context, void* 
 SKN_EXPORT skn_session_t* skn_session_begin_raster(skn_context_t* context, int width, int height, double dpi_x, double dpi_y);
 SKN_EXPORT skn_session_t* skn_session_begin_bitmap(skn_context_t* context, skn_bitmap_t* bitmap, double dpi_x, double dpi_y);
 SKN_EXPORT int skn_session_flush_commands(skn_session_t* session, const skn_command_t* commands, int command_count);
+SKN_EXPORT int skn_session_draw_path_strokes(skn_session_t* session, const skn_path_stroke_command_t* commands, int command_count);
+SKN_EXPORT int skn_session_draw_path_fills(skn_session_t* session, const skn_path_fill_command_t* commands, int command_count);
+SKN_EXPORT int skn_session_draw_glyph_runs(skn_session_t* session, const skn_glyph_run_command_t* commands, int command_count);
+SKN_EXPORT int skn_session_draw_bitmaps(skn_session_t* session, const skn_bitmap_command_t* commands, int command_count);
 SKN_EXPORT void skn_session_end(skn_session_t* session);
 
 SKN_EXPORT skn_bitmap_t* skn_bitmap_create_raster(int width, int height, double dpi_x, double dpi_y);

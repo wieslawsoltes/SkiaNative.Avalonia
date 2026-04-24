@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Media;
@@ -35,6 +37,8 @@ public sealed class SkiaNativeApiLease : IDisposable
 /// </summary>
 public sealed class SkiaNativeDirectCanvas : IDisposable
 {
+    private const uint ShapeAntiAliasFlag = 1u << 16;
+
     private readonly NativeSessionHandle _session;
     private readonly CommandBuffer _commands;
     private readonly Action<CommandBufferFlushResult> _reportFlush;
@@ -144,12 +148,122 @@ public sealed class SkiaNativeDirectCanvas : IDisposable
         _commands.FillNativePath(path.NativeHandle, color);
     }
 
+    public unsafe SkiaNativeDirectFlushResult StrokePaths(
+        ReadOnlySpan<SkiaNativePathStroke> strokes,
+        SkiaNativeStrokeCap cap = SkiaNativeStrokeCap.Butt,
+        SkiaNativeStrokeJoin join = SkiaNativeStrokeJoin.Miter,
+        double miterLimit = 10)
+    {
+        ThrowIfDisposed();
+        if (strokes.IsEmpty)
+        {
+            return default;
+        }
+
+        var pending = FlushCommandBuffer();
+        var strokeHandle = NativeStrokeCache.Get((NativeStrokeCap)cap, (NativeStrokeJoin)join, miterLimit, []);
+        if (strokeHandle.IsInvalid)
+        {
+            return pending.ToDirectResult();
+        }
+
+        var rented = ArrayPool<NativePathStrokeCommand>.Shared.Rent(strokes.Length);
+        var commandCount = 0;
+        try
+        {
+            for (var i = 0; i < strokes.Length; i++)
+            {
+                var stroke = strokes[i];
+                if (stroke.Path is null || stroke.Color.A == 0 || stroke.Width <= 0)
+                {
+                    continue;
+                }
+
+                rented[commandCount++] = new NativePathStrokeCommand
+                {
+                    Path = stroke.Path.NativeHandle.DangerousGetHandle(),
+                    Stroke = strokeHandle.DangerousGetHandle(),
+                    Color = stroke.Color.ToNative(),
+                    StrokeThickness = (float)stroke.Width,
+                    Flags = ShapeAntiAliasFlag
+                };
+            }
+
+            if (commandCount == 0)
+            {
+                return pending.ToDirectResult();
+            }
+
+            fixed (NativePathStrokeCommand* ptr = rented)
+            {
+                var stopwatch = Stopwatch.StartNew();
+                var nativeResult = NativeMethods.SessionDrawPathStrokes(_session, ptr, commandCount);
+                stopwatch.Stop();
+                var batch = new CommandBufferFlushResult(commandCount, 1, stopwatch.Elapsed, nativeResult);
+                _reportFlush(batch);
+                return CombineFlushResults(pending, batch).ToDirectResult();
+            }
+        }
+        finally
+        {
+            ArrayPool<NativePathStrokeCommand>.Shared.Return(rented);
+        }
+    }
+
+    public unsafe SkiaNativeDirectFlushResult FillPaths(ReadOnlySpan<SkiaNativePathFill> fills)
+    {
+        ThrowIfDisposed();
+        if (fills.IsEmpty)
+        {
+            return default;
+        }
+
+        var pending = FlushCommandBuffer();
+        var rented = ArrayPool<NativePathFillCommand>.Shared.Rent(fills.Length);
+        var commandCount = 0;
+        try
+        {
+            for (var i = 0; i < fills.Length; i++)
+            {
+                var fill = fills[i];
+                if (fill.Path is null || fill.Color.A == 0)
+                {
+                    continue;
+                }
+
+                rented[commandCount++] = new NativePathFillCommand
+                {
+                    Path = fill.Path.NativeHandle.DangerousGetHandle(),
+                    Color = fill.Color.ToNative(),
+                    Flags = ShapeAntiAliasFlag
+                };
+            }
+
+            if (commandCount == 0)
+            {
+                return pending.ToDirectResult();
+            }
+
+            fixed (NativePathFillCommand* ptr = rented)
+            {
+                var stopwatch = Stopwatch.StartNew();
+                var nativeResult = NativeMethods.SessionDrawPathFills(_session, ptr, commandCount);
+                stopwatch.Stop();
+                var batch = new CommandBufferFlushResult(commandCount, 1, stopwatch.Elapsed, nativeResult);
+                _reportFlush(batch);
+                return CombineFlushResults(pending, batch).ToDirectResult();
+            }
+        }
+        finally
+        {
+            ArrayPool<NativePathFillCommand>.Shared.Return(rented);
+        }
+    }
+
     public SkiaNativeDirectFlushResult Flush()
     {
         ThrowIfDisposed();
-        var result = _commands.Flush(_session);
-        _reportFlush(result);
-        return result.ToDirectResult();
+        return FlushCommandBuffer().ToDirectResult();
     }
 
     public void Dispose()
@@ -168,6 +282,20 @@ public sealed class SkiaNativeDirectCanvas : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
+
+    private CommandBufferFlushResult FlushCommandBuffer()
+    {
+        var result = _commands.Flush(_session);
+        _reportFlush(result);
+        return result;
+    }
+
+    private static CommandBufferFlushResult CombineFlushResults(CommandBufferFlushResult first, CommandBufferFlushResult second) =>
+        new(
+            first.CommandCount + second.CommandCount,
+            first.NativeTransitionCount + second.NativeTransitionCount,
+            first.FlushElapsed + second.FlushElapsed,
+            first.NativeResult != 0 ? first.NativeResult : second.NativeResult);
 }
 
 public readonly record struct SkiaNativeDirectFlushResult(
@@ -175,6 +303,16 @@ public readonly record struct SkiaNativeDirectFlushResult(
     int NativeTransitionCount,
     TimeSpan FlushElapsed,
     int NativeResult);
+
+/// <summary>
+/// One reusable native path stroke for specialized bulk direct rendering.
+/// </summary>
+public readonly record struct SkiaNativePathStroke(SkiaNativePath Path, Color Color, double Width);
+
+/// <summary>
+/// One reusable native path fill for specialized bulk direct rendering.
+/// </summary>
+public readonly record struct SkiaNativePathFill(SkiaNativePath Path, Color Color);
 
 /// <summary>
 /// Reusable native Skia path resource for hot custom drawing paths.

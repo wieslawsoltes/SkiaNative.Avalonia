@@ -19,6 +19,18 @@ public sealed class AbiTests
     }
 
     [Fact]
+    public void NativeBulkCommandLayouts_AreStableEnoughForCAbi()
+    {
+        Assert.Equal(48, Marshal.SizeOf<NativePathStrokeCommand>());
+        Assert.Equal(40, Marshal.SizeOf<NativePathFillCommand>());
+        Assert.Equal(40, Marshal.SizeOf<NativeGlyphRunCommand>());
+        Assert.Equal(64, Marshal.SizeOf<NativeBitmapCommand>());
+        Assert.Equal(24, Marshal.OffsetOf<NativePathStrokeCommand>(nameof(NativePathStrokeCommand.Color)).ToInt32());
+        Assert.Equal(16, Marshal.OffsetOf<NativeGlyphRunCommand>(nameof(NativeGlyphRunCommand.Color)).ToInt32());
+        Assert.Equal(12, Marshal.OffsetOf<NativeBitmapCommand>(nameof(NativeBitmapCommand.Color)).ToInt32());
+    }
+
+    [Fact]
     public void NativePathCommandLayout_IsStableEnoughForCAbi()
     {
         Assert.Equal(40, Marshal.SizeOf<NativePathCommand>());

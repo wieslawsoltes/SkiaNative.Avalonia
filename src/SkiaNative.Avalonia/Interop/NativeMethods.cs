@@ -45,6 +45,18 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(LibraryName, EntryPoint = "skn_session_flush_commands")]
     internal static partial int SessionFlushCommands(NativeSessionHandle session, NativeCommand* commands, int commandCount);
 
+    [LibraryImport(LibraryName, EntryPoint = "skn_session_draw_path_strokes")]
+    internal static partial int SessionDrawPathStrokes(NativeSessionHandle session, NativePathStrokeCommand* commands, int commandCount);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_session_draw_path_fills")]
+    internal static partial int SessionDrawPathFills(NativeSessionHandle session, NativePathFillCommand* commands, int commandCount);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_session_draw_glyph_runs")]
+    internal static partial int SessionDrawGlyphRuns(NativeSessionHandle session, NativeGlyphRunCommand* commands, int commandCount);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_session_draw_bitmaps")]
+    internal static partial int SessionDrawBitmaps(NativeSessionHandle session, NativeBitmapCommand* commands, int commandCount);
+
     [LibraryImport(LibraryName, EntryPoint = "skn_bitmap_create_raster")]
     internal static partial NativeBitmapHandle BitmapCreateRaster(int width, int height, double dpiX, double dpiY);
 

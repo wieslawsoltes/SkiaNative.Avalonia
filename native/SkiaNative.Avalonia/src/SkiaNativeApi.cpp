@@ -16,6 +16,10 @@ extern "C" void objc_autoreleasePoolPop(void* context);
 static_assert(sizeof(skn_color_t) == 16, "skn_color_t must stay ABI-compatible with NativeColor.");
 static_assert(sizeof(skn_matrix_t) == 48, "skn_matrix_t must stay ABI-compatible with NativeMatrix.");
 static_assert(sizeof(skn_command_t) == 152, "skn_command_t must stay ABI-compatible with NativeCommand.");
+static_assert(sizeof(skn_path_stroke_command_t) == 48, "skn_path_stroke_command_t must stay ABI-compatible with NativePathStrokeCommand.");
+static_assert(sizeof(skn_path_fill_command_t) == 40, "skn_path_fill_command_t must stay ABI-compatible with NativePathFillCommand.");
+static_assert(sizeof(skn_glyph_run_command_t) == 40, "skn_glyph_run_command_t must stay ABI-compatible with NativeGlyphRunCommand.");
+static_assert(sizeof(skn_bitmap_command_t) == 64, "skn_bitmap_command_t must stay ABI-compatible with NativeBitmapCommand.");
 static_assert(sizeof(skn_gradient_stop_t) == 20, "skn_gradient_stop_t must stay ABI-compatible with NativeGradientStop.");
 static_assert(sizeof(skn_path_command_t) == 40, "skn_path_command_t must stay ABI-compatible with NativePathCommand.");
 
@@ -1003,6 +1007,143 @@ SKN_EXPORT int skn_session_flush_commands(skn_session_t* session, const skn_comm
             default:
                 break;
         }
+    }
+#endif
+
+    return command_count;
+}
+
+SKN_EXPORT int skn_session_draw_path_strokes(skn_session_t* session, const skn_path_stroke_command_t* commands, int command_count) {
+    ScopedAutoreleasePool autorelease_pool;
+    if (session == nullptr || commands == nullptr || command_count < 0) {
+        return -1;
+    }
+
+#if defined(SKIANATIVE_WITH_SKIA)
+    if (!session->surface) {
+        return 0;
+    }
+
+    auto* canvas = session->surface->getCanvas();
+    for (int i = 0; i < command_count; ++i) {
+        const auto& command = commands[i];
+        if (command.path == nullptr || command.stroke_thickness <= 0.0f) {
+            continue;
+        }
+
+        auto paint = make_command_paint(
+            command.color,
+            SkPaint::kStroke_Style,
+            command.stroke_thickness,
+            command.shader,
+            command.stroke);
+        apply_shape_paint_flags(paint, command.flags);
+        canvas->drawPath(command.path->path, paint);
+    }
+#endif
+
+    return command_count;
+}
+
+SKN_EXPORT int skn_session_draw_path_fills(skn_session_t* session, const skn_path_fill_command_t* commands, int command_count) {
+    ScopedAutoreleasePool autorelease_pool;
+    if (session == nullptr || commands == nullptr || command_count < 0) {
+        return -1;
+    }
+
+#if defined(SKIANATIVE_WITH_SKIA)
+    if (!session->surface) {
+        return 0;
+    }
+
+    auto* canvas = session->surface->getCanvas();
+    for (int i = 0; i < command_count; ++i) {
+        const auto& command = commands[i];
+        if (command.path == nullptr) {
+            continue;
+        }
+
+        auto paint = make_command_paint(
+            command.color,
+            SkPaint::kFill_Style,
+            1.0f,
+            command.shader,
+            nullptr);
+        apply_shape_paint_flags(paint, command.flags);
+        canvas->drawPath(command.path->path, paint);
+    }
+#endif
+
+    return command_count;
+}
+
+SKN_EXPORT int skn_session_draw_glyph_runs(skn_session_t* session, const skn_glyph_run_command_t* commands, int command_count) {
+    ScopedAutoreleasePool autorelease_pool;
+    if (session == nullptr || commands == nullptr || command_count < 0) {
+        return -1;
+    }
+
+#if defined(SKIANATIVE_WITH_SKIA)
+    if (!session->surface) {
+        return 0;
+    }
+
+    auto* canvas = session->surface->getCanvas();
+    for (int i = 0; i < command_count; ++i) {
+        const auto& command = commands[i];
+        if (command.glyph_run == nullptr || !command.glyph_run->text_blob) {
+            continue;
+        }
+
+        auto paint = make_command_paint(
+            command.color,
+            SkPaint::kFill_Style,
+            1.0f,
+            command.shader,
+            nullptr);
+        canvas->drawTextBlob(
+            command.glyph_run->text_blob,
+            command.glyph_run->baseline_x,
+            command.glyph_run->baseline_y,
+            paint);
+    }
+#endif
+
+    return command_count;
+}
+
+SKN_EXPORT int skn_session_draw_bitmaps(skn_session_t* session, const skn_bitmap_command_t* commands, int command_count) {
+    ScopedAutoreleasePool autorelease_pool;
+    if (session == nullptr || commands == nullptr || command_count < 0) {
+        return -1;
+    }
+
+#if defined(SKIANATIVE_WITH_SKIA)
+    if (!session->surface) {
+        return 0;
+    }
+
+    auto* canvas = session->surface->getCanvas();
+    for (int i = 0; i < command_count; ++i) {
+        const auto& command = commands[i];
+        auto image = bitmap_image(command.bitmap);
+        if (!image) {
+            continue;
+        }
+
+        auto src = SkRect::MakeXYWH(command.x0, command.y0, command.x1, command.y1);
+        auto dst = SkRect::MakeXYWH(command.x2, command.y2, command.x3, command.y3);
+        SkPaint paint;
+        paint.setAntiAlias((command.flags & kBitmapAntiAliasFlag) != 0);
+        paint.setAlphaf(std::clamp(command.color.a, 0.0f, 1.0f));
+        paint.setBlendMode(bitmap_blend_mode(command.flags));
+        canvas->drawImageRect(
+            image,
+            src,
+            dst,
+            bitmap_sampling_options(command.flags),
+            &paint,
+            SkCanvas::kStrict_SrcRectConstraint);
     }
 #endif
 

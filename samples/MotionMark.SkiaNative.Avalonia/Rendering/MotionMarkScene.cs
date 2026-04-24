@@ -6,6 +6,7 @@ using Avalonia;
 using Avalonia.Media;
 using SkiaNativePath = global::SkiaNative.Avalonia.SkiaNativePath;
 using SkiaNativePathCommand = global::SkiaNative.Avalonia.SkiaNativePathCommand;
+using SkiaNativePathStroke = global::SkiaNative.Avalonia.SkiaNativePathStroke;
 
 namespace MotionMark.SkiaNative.AvaloniaApp.Rendering;
 
@@ -85,7 +86,7 @@ internal sealed class MotionMarkScene
 
     private MotionMarkSceneSnapshot BuildSnapshot(Size size)
     {
-        var pathRuns = new List<MotionMarkPathRun>(Math.Max(32, _elements.Count / 2));
+        var pathRuns = new List<SkiaNativePathStroke>(Math.Max(32, _elements.Count / 2));
         var scaleX = (float)(size.Width / (GridWidth + 1));
         var scaleY = (float)(size.Height / (GridHeight + 1));
         var uniformScale = MathF.Max(1, MathF.Min(scaleX, scaleY));
@@ -128,7 +129,7 @@ internal sealed class MotionMarkScene
             var finalize = element.Split || i == elements.Length - 1;
             if (finalize)
             {
-                pathRuns.Add(new MotionMarkPathRun(SkiaNativePath.Create(CollectionsMarshal.AsSpan(commands)), element.Color, element.Width));
+                pathRuns.Add(new SkiaNativePathStroke(SkiaNativePath.Create(CollectionsMarshal.AsSpan(commands)), element.Color, element.Width));
                 commands.Clear();
                 pathStarted = false;
             }
@@ -294,7 +295,7 @@ internal sealed class MotionMarkSceneSnapshot
 {
     private int _referenceCount = 1;
 
-    public MotionMarkSceneSnapshot(Size size, int version, int elementCount, MotionMarkPathRun[] pathRuns)
+    public MotionMarkSceneSnapshot(Size size, int version, int elementCount, SkiaNativePathStroke[] pathRuns)
     {
         Size = size;
         Version = version;
@@ -305,7 +306,7 @@ internal sealed class MotionMarkSceneSnapshot
     public Size Size { get; }
     public int Version { get; }
     public int ElementCount { get; }
-    public MotionMarkPathRun[] PathRuns { get; }
+    public SkiaNativePathStroke[] PathRuns { get; }
 
     public MotionMarkSceneSnapshot AddReference()
     {
@@ -330,5 +331,3 @@ internal sealed class MotionMarkSceneSnapshot
         }
     }
 }
-
-internal readonly record struct MotionMarkPathRun(SkiaNativePath Path, Color Color, double Width);
