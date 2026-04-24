@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AvaloniaVersion>12.0.999</AvaloniaVersion>
+    <AvaloniaSourceRoot Condition="'$(AvaloniaSourceRoot)' == '' and Exists('/Users/wieslawsoltes/GitHub/Avalonia/src/Avalonia.Base/Avalonia.Base.csproj')">/Users/wieslawsoltes/GitHub/Avalonia</AvaloniaSourceRoot>
+  </PropertyGroup>
+</Project>
