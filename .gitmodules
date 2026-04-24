@@ -1,0 +1,4 @@
+[submodule "external/skia"]
+	path = external/skia
+	url = https://skia.googlesource.com/skia
+	ignore = all
