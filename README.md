@@ -167,6 +167,8 @@ The package includes native dylibs only when they exist under `artifacts/native/
 
 ## Running the Sample
 
+### Backend Validation Sample
+
 Run with the SkiaNative backend:
 
 ```bash
@@ -185,6 +187,16 @@ Environment variable form:
 SKIANATIVE_SAMPLE_BACKEND=skianative dotnet run --project samples/SkiaNative.Avalonia.Sample/SkiaNative.Avalonia.Sample.csproj
 SKIANATIVE_SAMPLE_BACKEND=avalonia-skia dotnet run --project samples/SkiaNative.Avalonia.Sample/SkiaNative.Avalonia.Sample.csproj
 ```
+
+### MotionMark SkiaNative Sample
+
+Run the MotionMark-style path workload ported from the FastSkiaSharp SkiaSharp sample:
+
+```bash
+dotnet run --project samples/MotionMark.SkiaNative.Avalonia/MotionMark.SkiaNative.Avalonia.csproj
+```
+
+This sample intentionally does not reference SkiaSharp and does not render its workload through Avalonia `Geometry` / `Pen` primitives. It prepares `SkiaNativePathCommand` snapshots, submits an Avalonia `ICustomDrawOperation` only for render-thread scheduling, leases `ISkiaNativeApiLeaseFeature`, and encodes the background, grid, and path strokes directly into the SkiaNative command buffer. With the SkiaNative backend on macOS, those commands target the Metal/Ganesh GPU surface and execute through the native C++ Skia path. The UI exposes complexity, optional per-frame path split mutation, frame timing, native command count, transition count, and GPU cache usage.
 
 ## Validation
 
