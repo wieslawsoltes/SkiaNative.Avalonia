@@ -16,6 +16,9 @@ internal sealed class NativeDrawingContext : IDrawingContextImpl, IDrawingContex
     private readonly CommandBuffer _commands;
     private readonly Stack<RenderOptions> _renderOptionsStack = new();
     private readonly Stack<TextOptions> _textOptionsStack = new();
+    private readonly object _directFlushLock = new();
+    private SkiaNativeApiLeaseFeature? _directFeature;
+    private CommandBufferFlushResult _directFlushResult;
     private Matrix _transform = Matrix.Identity;
     private RenderOptions _renderOptions;
     private TextOptions _textOptions;
@@ -164,7 +167,19 @@ internal sealed class NativeDrawingContext : IDrawingContextImpl, IDrawingContex
     }
     public void PushEffect(Rect? clipRect, IEffect effect) => _commands.Save();
     public void PopEffect() => _commands.Restore();
-    public object? GetFeature(Type t) => null;
+    public object? GetFeature(Type t)
+    {
+        if (t == typeof(ISkiaNativeApiLeaseFeature))
+        {
+            return _directFeature ??= new SkiaNativeApiLeaseFeature(
+                _session,
+                _options.InitialCommandBufferCapacity,
+                FlushPendingCommands,
+                ReportDirectFlush);
+        }
+
+        return null;
+    }
 
     public void Dispose()
     {
@@ -173,7 +188,7 @@ internal sealed class NativeDrawingContext : IDrawingContextImpl, IDrawingContex
 
         try
         {
-            result = _commands.Flush(_session);
+            result = CombineFlushResults(GetDirectFlushResult(), _commands.Flush(_session));
         }
         finally
         {
@@ -209,4 +224,34 @@ internal sealed class NativeDrawingContext : IDrawingContextImpl, IDrawingContex
             ? new NativeResourceCacheUsage(resourceCount, resourceBytes, purgeableBytes, resourceLimit)
             : default;
     }
+
+    private void ReportDirectFlush(CommandBufferFlushResult result)
+    {
+        if (result.CommandCount == 0)
+        {
+            return;
+        }
+
+        lock (_directFlushLock)
+        {
+            _directFlushResult = CombineFlushResults(_directFlushResult, result);
+        }
+    }
+
+    private CommandBufferFlushResult GetDirectFlushResult()
+    {
+        lock (_directFlushLock)
+        {
+            return _directFlushResult;
+        }
+    }
+
+    private CommandBufferFlushResult FlushPendingCommands() => _commands.Flush(_session);
+
+    private static CommandBufferFlushResult CombineFlushResults(CommandBufferFlushResult first, CommandBufferFlushResult second) =>
+        new(
+            first.CommandCount + second.CommandCount,
+            first.NativeTransitionCount + second.NativeTransitionCount,
+            first.FlushElapsed + second.FlushElapsed,
+            first.NativeResult != 0 ? first.NativeResult : second.NativeResult);
 }

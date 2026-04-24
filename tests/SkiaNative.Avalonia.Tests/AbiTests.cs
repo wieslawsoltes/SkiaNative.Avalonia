@@ -26,6 +26,23 @@ public sealed class AbiTests
     }
 
     [Fact]
+    public void DirectPathCommandLayout_MatchesNativePathCommandLayout()
+    {
+        Assert.Equal(Marshal.SizeOf<NativePathCommand>(), Marshal.SizeOf<SkiaNativePathCommand>());
+        Assert.Equal(
+            Marshal.OffsetOf<NativePathCommand>(nameof(NativePathCommand.X0)).ToInt32(),
+            Marshal.OffsetOf<SkiaNativePathCommand>(nameof(SkiaNativePathCommand.X0)).ToInt32());
+        Assert.Equal((uint)NativePathCommandKind.CubicTo, (uint)SkiaNativePathCommandKind.CubicTo);
+
+        var command = SkiaNativePathCommand.QuadTo(new Point(1, 2), new Point(3, 4));
+        Assert.Equal(SkiaNativePathCommandKind.QuadTo, command.Kind);
+        Assert.Equal(1, command.X0);
+        Assert.Equal(2, command.Y0);
+        Assert.Equal(3, command.X1);
+        Assert.Equal(4, command.Y1);
+    }
+
+    [Fact]
     public void NativeGradientStopLayout_IsStableEnoughForCAbi()
     {
         Assert.Equal(20, Marshal.SizeOf<NativeGradientStop>());

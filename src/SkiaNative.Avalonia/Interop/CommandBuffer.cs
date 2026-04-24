@@ -72,6 +72,46 @@ internal sealed class CommandBuffer
         });
     }
 
+    public void DrawSolidLine(Color color, double thickness, Point p1, Point p2, RenderOptions renderOptions = default)
+    {
+        if (color.A == 0 || thickness <= 0)
+        {
+            return;
+        }
+
+        _commands.Add(new NativeCommand
+        {
+            Kind = NativeCommandKind.DrawLine,
+            Flags = CreateShapeFlags(0u, renderOptions),
+            Stroke = color.ToNative(),
+            StrokeThickness = (float)thickness,
+            X0 = (float)p1.X,
+            Y0 = (float)p1.Y,
+            X1 = (float)p2.X,
+            Y1 = (float)p2.Y
+        });
+    }
+
+    public void FillSolidRect(Color color, Rect rect, RenderOptions renderOptions = default)
+    {
+        rect = rect.Normalize();
+        if (color.A == 0 || rect.Width <= 0 || rect.Height <= 0)
+        {
+            return;
+        }
+
+        _commands.Add(new NativeCommand
+        {
+            Kind = NativeCommandKind.DrawRect,
+            Flags = CreateShapeFlags(1u, renderOptions),
+            Fill = color.ToNative(),
+            X0 = (float)rect.X,
+            Y0 = (float)rect.Y,
+            X1 = (float)rect.Width,
+            Y1 = (float)rect.Height
+        });
+    }
+
     public void DrawRect(IBrush? brush, IPen? pen, RoundedRect rect, RenderOptions renderOptions = default)
     {
         BrushUtil.TryCreatePaint(brush, rect.Rect, out var fill);
@@ -190,6 +230,85 @@ internal sealed class CommandBuffer
         {
             AddPathCommand(strokePath, 2u, default, stroke, renderOptions);
         }
+    }
+
+    public unsafe void FillSolidPath(ReadOnlySpan<NativePathCommand> pathCommands, Color color, NativePathFillRule fillRule, RenderOptions renderOptions = default)
+    {
+        if (color.A == 0 || pathCommands.IsEmpty)
+        {
+            return;
+        }
+
+        NativePathHandle path;
+        fixed (NativePathCommand* ptr = pathCommands)
+        {
+            path = NativeMethods.PathCreate(ptr, pathCommands.Length, fillRule);
+        }
+
+        if (path.IsInvalid)
+        {
+            path.Dispose();
+            return;
+        }
+
+        _resources.Add(path);
+        _ownedPaths.Add(path);
+        _commands.Add(new NativeCommand
+        {
+            Kind = NativeCommandKind.DrawPath,
+            Flags = CreateShapeFlags(1u, renderOptions),
+            Resource0 = path.DangerousGetHandle(),
+            Fill = color.ToNative()
+        });
+    }
+
+    public unsafe void StrokeSolidPath(
+        ReadOnlySpan<NativePathCommand> pathCommands,
+        Color color,
+        double strokeWidth,
+        NativeStrokeCap cap,
+        NativeStrokeJoin join,
+        double miterLimit,
+        RenderOptions renderOptions = default)
+    {
+        if (color.A == 0 || strokeWidth <= 0 || pathCommands.IsEmpty)
+        {
+            return;
+        }
+
+        NativePathHandle path;
+        fixed (NativePathCommand* ptr = pathCommands)
+        {
+            path = NativeMethods.PathCreate(ptr, pathCommands.Length, NativePathFillRule.NonZero);
+        }
+
+        if (path.IsInvalid)
+        {
+            path.Dispose();
+            return;
+        }
+
+        var stroke = NativeMethods.StrokeCreate(cap, join, (float)Math.Max(0, miterLimit), null, 0, 0);
+        if (stroke.IsInvalid)
+        {
+            path.Dispose();
+            stroke.Dispose();
+            return;
+        }
+
+        _resources.Add(path);
+        _ownedPaths.Add(path);
+        _resources.Add(stroke);
+        _ownedStrokes.Add(stroke);
+        _commands.Add(new NativeCommand
+        {
+            Kind = NativeCommandKind.DrawPath,
+            Flags = CreateShapeFlags(2u, renderOptions),
+            Resource0 = path.DangerousGetHandle(),
+            Resource2 = stroke.DangerousGetHandle(),
+            Stroke = color.ToNative(),
+            StrokeThickness = (float)strokeWidth
+        });
     }
 
     public void DrawGeometry(IBrush? brush, IPen? pen, NativeGeometry geometry, RenderOptions renderOptions = default)
