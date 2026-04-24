@@ -1,8 +1,11 @@
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using SkiaNative.Avalonia;
 using SkiaNative.Avalonia.Geometry;
+using SkiaNative.Avalonia.Imaging;
 using Xunit;
 
 namespace SkiaNative.Avalonia.Tests;
@@ -227,6 +230,40 @@ public sealed class AbiTests
     }
 
     [Fact]
+    public void BrushUtil_CachesImageBrushIntermediatesUntilBitmapVersionChanges()
+    {
+        var nativeLibraryPath = FindNativeLibrary();
+        Assert.SkipUnless(nativeLibraryPath is not null, "Native dylib artifacts are required for native image brush cache smoke tests.");
+
+        NativeLibraryResolver.Configure(new SkiaNativeOptions
+        {
+            NativeLibraryPath = nativeLibraryPath
+        });
+
+        var source = new NativeWriteableBitmap(new PixelSize(4, 4), new Vector(96, 96), PixelFormats.Bgra8888, AlphaFormat.Premul);
+        using var bitmap = new TestBitmap(source);
+        using var cache = new TileBrushIntermediateCache();
+        var brush = new ImageBrush(bitmap)
+        {
+            TileMode = TileMode.Tile,
+            Stretch = Stretch.Fill,
+            DestinationRect = new RelativeRect(0, 0, 8, 8, RelativeUnit.Absolute)
+        };
+
+        Assert.True(BrushUtil.TryCreatePaint(brush, new Rect(0, 0, 32, 32), out var first, cache));
+        Assert.True(BrushUtil.TryCreatePaint(brush, new Rect(0, 0, 32, 32), out var second, cache));
+        Assert.False(first.OwnsShader);
+        Assert.Same(first.Shader, second.Shader);
+
+        using (source.Lock())
+        {
+        }
+
+        Assert.True(BrushUtil.TryCreatePaint(brush, new Rect(0, 0, 32, 32), out var afterMutation, cache));
+        Assert.NotSame(first.Shader, afterMutation.Shader);
+    }
+
+    [Fact]
     public void NativePathFactories_CreatePrimitiveGroupAndCombinedHandles()
     {
         var nativeLibraryPath = FindNativeLibrary();
@@ -296,5 +333,13 @@ public sealed class AbiTests
         }
 
         return null;
+    }
+
+    private sealed class TestBitmap : Bitmap
+    {
+        public TestBitmap(IBitmapImpl impl)
+            : base(impl)
+        {
+        }
     }
 }

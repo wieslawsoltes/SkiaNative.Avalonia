@@ -5,6 +5,7 @@ using Avalonia.Platform;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using SkiaNative.Avalonia.Geometry;
 using SkiaNative.Avalonia.Imaging;
@@ -28,6 +29,7 @@ internal sealed class CommandBuffer : IDisposable
     private readonly PooledReferenceList<NativeShaderHandle> _ownedShaders;
     private readonly PooledReferenceList<NativeStrokeHandle> _ownedStrokes;
     private readonly PooledReferenceList<NativePathHandle> _ownedPaths;
+    private readonly TileBrushIntermediateCache _tileBrushCache = new();
     private readonly Stack<bool> _opacityMaskLayers = new();
 
     public CommandBuffer(int capacity)
@@ -60,7 +62,7 @@ internal sealed class CommandBuffer : IDisposable
 
     public void DrawLine(IPen? pen, Point p1, Point p2, RenderOptions renderOptions = default)
     {
-        if (!BrushUtil.TryGetStroke(pen, new Rect(p1, p2).Normalize(), out var stroke))
+        if (!BrushUtil.TryGetStroke(pen, new Rect(p1, p2).Normalize(), out var stroke, _tileBrushCache))
         {
             return;
         }
@@ -123,8 +125,8 @@ internal sealed class CommandBuffer : IDisposable
 
     public void DrawRect(IBrush? brush, IPen? pen, RoundedRect rect, RenderOptions renderOptions = default)
     {
-        BrushUtil.TryCreatePaint(brush, rect.Rect, out var fill);
-        BrushUtil.TryGetStroke(pen, rect.Rect, out var stroke);
+        BrushUtil.TryCreatePaint(brush, rect.Rect, out var fill, _tileBrushCache);
+        BrushUtil.TryGetStroke(pen, rect.Rect, out var stroke, _tileBrushCache);
 
         if (!fill.HasPaint && !stroke.HasStroke)
         {
@@ -206,8 +208,8 @@ internal sealed class CommandBuffer : IDisposable
 
     public void DrawEllipse(IBrush? brush, IPen? pen, Rect rect, RenderOptions renderOptions = default)
     {
-        BrushUtil.TryCreatePaint(brush, rect, out var fill);
-        BrushUtil.TryGetStroke(pen, rect, out var stroke);
+        BrushUtil.TryCreatePaint(brush, rect, out var fill, _tileBrushCache);
+        BrushUtil.TryGetStroke(pen, rect, out var stroke, _tileBrushCache);
 
         if (!fill.HasPaint && !stroke.HasStroke)
         {
@@ -227,8 +229,8 @@ internal sealed class CommandBuffer : IDisposable
 
     public void DrawPath(IBrush? brush, IPen? pen, Rect bounds, NativePathHandle? fillPath, NativePathHandle? strokePath, RenderOptions renderOptions = default)
     {
-        BrushUtil.TryCreatePaint(brush, bounds, out var fill);
-        BrushUtil.TryGetStroke(pen, bounds, out var stroke);
+        BrushUtil.TryCreatePaint(brush, bounds, out var fill, _tileBrushCache);
+        BrushUtil.TryGetStroke(pen, bounds, out var stroke, _tileBrushCache);
 
         if (fill.HasPaint && fillPath is { IsInvalid: false })
         {
@@ -394,7 +396,7 @@ internal sealed class CommandBuffer : IDisposable
 
     public void PushOpacityMask(IBrush mask, Rect bounds)
     {
-        if (!BrushUtil.TryCreatePaint(mask, bounds, out var paint))
+        if (!BrushUtil.TryCreatePaint(mask, bounds, out var paint, _tileBrushCache))
         {
             _opacityMaskLayers.Push(false);
             SaveLayer(mask.Opacity, bounds);
@@ -528,7 +530,7 @@ internal sealed class CommandBuffer : IDisposable
 
     public void DrawGlyphRun(IBrush? foreground, IGlyphRunImpl glyphRun, TextOptions textOptions = default, RenderOptions renderOptions = default)
     {
-        if (glyphRun is not NativeGlyphRun native || !BrushUtil.TryCreatePaint(foreground, glyphRun.Bounds, out var fill))
+        if (glyphRun is not NativeGlyphRun native || !BrushUtil.TryCreatePaint(foreground, glyphRun.Bounds, out var fill, _tileBrushCache))
         {
             return;
         }
@@ -720,10 +722,45 @@ internal sealed class CommandBuffer : IDisposable
         {
             var stopwatch = Stopwatch.StartNew();
             var nativeResult = 0;
+            var transitionCount = 0;
             try
             {
-                nativeResult = NativeMethods.SessionFlushCommands(session, ptr, commandCount);
-                return new CommandBufferFlushResult(commandCount, 1, stopwatch.Elapsed, nativeResult);
+                var index = 0;
+                while (index < commandCount)
+                {
+                    var kind = _commands[index].Kind;
+                    if (kind is NativeCommandKind.DrawBitmap or NativeCommandKind.DrawGlyphRun)
+                    {
+                        var batchCount = CountConsecutiveCommands(index, kind, commandCount);
+                        if (batchCount > 1)
+                        {
+                            nativeResult = kind == NativeCommandKind.DrawBitmap
+                                ? FlushBitmapBatch(session, ptr + index, batchCount)
+                                : FlushGlyphRunBatch(session, ptr + index, batchCount);
+                            transitionCount++;
+                            index += batchCount;
+                            continue;
+                        }
+                    }
+
+                    var genericStart = index++;
+                    while (index < commandCount)
+                    {
+                        kind = _commands[index].Kind;
+                        if (kind is NativeCommandKind.DrawBitmap or NativeCommandKind.DrawGlyphRun &&
+                            CountConsecutiveCommands(index, kind, commandCount) > 1)
+                        {
+                            break;
+                        }
+
+                        index++;
+                    }
+
+                    nativeResult = NativeMethods.SessionFlushCommands(session, ptr + genericStart, index - genericStart);
+                    transitionCount++;
+                }
+
+                return new CommandBufferFlushResult(commandCount, transitionCount, stopwatch.Elapsed, nativeResult);
             }
             finally
             {
@@ -747,6 +784,7 @@ internal sealed class CommandBuffer : IDisposable
         _ownedShaders.Dispose();
         _ownedStrokes.Dispose();
         _ownedPaths.Dispose();
+        _tileBrushCache.Dispose();
         _disposed = true;
     }
 
@@ -769,6 +807,7 @@ internal sealed class CommandBuffer : IDisposable
             _ownedPaths[i].Dispose();
         }
         _ownedPaths.Clear();
+        _tileBrushCache.Clear();
     }
 
     private void AddCommand(NativeCommand command)
@@ -802,6 +841,79 @@ internal sealed class CommandBuffer : IDisposable
         if (stroke.OwnsStroke)
         {
             _ownedStrokes.Add(stroke.Stroke);
+        }
+    }
+
+    private int CountConsecutiveCommands(int start, NativeCommandKind kind, int commandCount)
+    {
+        var end = start + 1;
+        while (end < commandCount && _commands[end].Kind == kind)
+        {
+            end++;
+        }
+
+        return end - start;
+    }
+
+    private static unsafe int FlushBitmapBatch(NativeSessionHandle session, NativeCommand* source, int count)
+    {
+        var rented = ArrayPool<NativeBitmapCommand>.Shared.Rent(count);
+        try
+        {
+            for (var i = 0; i < count; i++)
+            {
+                var command = source[i];
+                rented[i] = new NativeBitmapCommand
+                {
+                    Bitmap = command.Resource0,
+                    Flags = command.Flags,
+                    Color = command.Fill,
+                    X0 = command.X0,
+                    Y0 = command.Y0,
+                    X1 = command.X1,
+                    Y1 = command.Y1,
+                    X2 = command.X2,
+                    Y2 = command.Y2,
+                    X3 = command.X3,
+                    Y3 = command.Y3
+                };
+            }
+
+            fixed (NativeBitmapCommand* ptr = rented)
+            {
+                return NativeMethods.SessionDrawBitmaps(session, ptr, count);
+            }
+        }
+        finally
+        {
+            ArrayPool<NativeBitmapCommand>.Shared.Return(rented);
+        }
+    }
+
+    private static unsafe int FlushGlyphRunBatch(NativeSessionHandle session, NativeCommand* source, int count)
+    {
+        var rented = ArrayPool<NativeGlyphRunCommand>.Shared.Rent(count);
+        try
+        {
+            for (var i = 0; i < count; i++)
+            {
+                var command = source[i];
+                rented[i] = new NativeGlyphRunCommand
+                {
+                    GlyphRun = command.Resource0,
+                    Shader = command.Resource1,
+                    Color = command.Fill
+                };
+            }
+
+            fixed (NativeGlyphRunCommand* ptr = rented)
+            {
+                return NativeMethods.SessionDrawGlyphRuns(session, ptr, count);
+            }
+        }
+        finally
+        {
+            ArrayPool<NativeGlyphRunCommand>.Shared.Return(rented);
         }
     }
 }
@@ -1221,11 +1333,154 @@ internal static unsafe class NativeShaderCache
     }
 }
 
+internal sealed class TileBrushIntermediateCache : IDisposable
+{
+    private readonly Dictionary<TileBrushCacheKey, TileBrushCacheEntry> _entries = new(TileBrushCacheKeyComparer.Instance);
+
+    public unsafe bool TryCreatePaint(
+        TileBrushCacheKey key,
+        NativeTileMode tileX,
+        NativeTileMode tileY,
+        NativeMatrix localMatrix,
+        float opacity,
+        Func<NativeRenderTargetBitmap> createIntermediate,
+        out NativePaintSource paint)
+    {
+        paint = default;
+        if (!_entries.TryGetValue(key, out var entry))
+        {
+            var intermediate = createIntermediate();
+            var matrix = localMatrix;
+            var shader = NativeMethods.ShaderCreateBitmap(intermediate.NativeBitmap, tileX, tileY, &matrix);
+            if (shader.IsInvalid)
+            {
+                shader.Dispose();
+                intermediate.Dispose();
+                return false;
+            }
+
+            entry = new TileBrushCacheEntry(intermediate, shader);
+            _entries.Add(key, entry);
+        }
+
+        paint = new NativePaintSource(new NativeColor(1, 1, 1, opacity), entry.Shader, ownsShader: false);
+        return true;
+    }
+
+    public void Clear()
+    {
+        foreach (var entry in _entries.Values)
+        {
+            entry.Dispose();
+        }
+
+        _entries.Clear();
+    }
+
+    public void Dispose() => Clear();
+}
+
+internal sealed class TileBrushCacheEntry : IDisposable
+{
+    public TileBrushCacheEntry(NativeRenderTargetBitmap intermediate, NativeShaderHandle shader)
+    {
+        Intermediate = intermediate;
+        Shader = shader;
+    }
+
+    public NativeRenderTargetBitmap Intermediate { get; }
+    public NativeShaderHandle Shader { get; }
+
+    public void Dispose()
+    {
+        Shader.Dispose();
+        Intermediate.Dispose();
+    }
+}
+
+internal readonly record struct TileBrushCacheKey(
+    TileBrushCacheKind Kind,
+    object? Identity,
+    nint SourceHandle,
+    int SourceVersion,
+    PixelSize SourcePixelSize,
+    Vector SourceDpi,
+    Size ContentSize,
+    Size TargetSize,
+    Rect SourceRect,
+    Rect DestinationRect,
+    Size IntermediateSize,
+    Rect IntermediateClip,
+    Matrix IntermediateTransform,
+    Matrix PaintTransform,
+    TileMode TileMode,
+    Stretch Stretch,
+    AlignmentX AlignmentX,
+    AlignmentY AlignmentY,
+    double Opacity);
+
+internal enum TileBrushCacheKind
+{
+    Image,
+    Scene
+}
+
+internal sealed class TileBrushCacheKeyComparer : IEqualityComparer<TileBrushCacheKey>
+{
+    public static readonly TileBrushCacheKeyComparer Instance = new();
+
+    public bool Equals(TileBrushCacheKey x, TileBrushCacheKey y) =>
+        x.Kind == y.Kind &&
+        ReferenceEquals(x.Identity, y.Identity) &&
+        x.SourceHandle == y.SourceHandle &&
+        x.SourceVersion == y.SourceVersion &&
+        x.SourcePixelSize == y.SourcePixelSize &&
+        x.SourceDpi == y.SourceDpi &&
+        x.ContentSize == y.ContentSize &&
+        x.TargetSize == y.TargetSize &&
+        x.SourceRect == y.SourceRect &&
+        x.DestinationRect == y.DestinationRect &&
+        x.IntermediateSize == y.IntermediateSize &&
+        x.IntermediateClip == y.IntermediateClip &&
+        x.IntermediateTransform == y.IntermediateTransform &&
+        x.PaintTransform == y.PaintTransform &&
+        x.TileMode == y.TileMode &&
+        x.Stretch == y.Stretch &&
+        x.AlignmentX == y.AlignmentX &&
+        x.AlignmentY == y.AlignmentY &&
+        x.Opacity == y.Opacity;
+
+    public int GetHashCode(TileBrushCacheKey key)
+    {
+        var hash = new HashCode();
+        hash.Add(key.Kind);
+        hash.Add(key.Identity is null ? 0 : RuntimeHelpers.GetHashCode(key.Identity));
+        hash.Add(key.SourceHandle);
+        hash.Add(key.SourceVersion);
+        hash.Add(key.SourcePixelSize);
+        hash.Add(key.SourceDpi);
+        hash.Add(key.ContentSize);
+        hash.Add(key.TargetSize);
+        hash.Add(key.SourceRect);
+        hash.Add(key.DestinationRect);
+        hash.Add(key.IntermediateSize);
+        hash.Add(key.IntermediateClip);
+        hash.Add(key.IntermediateTransform);
+        hash.Add(key.PaintTransform);
+        hash.Add(key.TileMode);
+        hash.Add(key.Stretch);
+        hash.Add(key.AlignmentX);
+        hash.Add(key.AlignmentY);
+        hash.Add(key.Opacity);
+        return hash.ToHashCode();
+    }
+}
+
 internal static unsafe class BrushUtil
 {
     private const float DuplicateStopEpsilon = 0.0001f;
 
-    public static bool TryCreatePaint(IBrush? brush, Rect bounds, out NativePaintSource paint)
+    public static bool TryCreatePaint(IBrush? brush, Rect bounds, out NativePaintSource paint, TileBrushIntermediateCache? tileBrushCache = null)
     {
         paint = default;
         if (brush is null)
@@ -1258,17 +1513,17 @@ internal static unsafe class BrushUtil
         if (brush is ISceneBrush sceneBrush)
         {
             using var content = sceneBrush.CreateContent();
-            return content is not null && TryCreateSceneBrushPaint(content, bounds, out paint);
+            return content is not null && TryCreateSceneBrushPaint(content, bounds, out paint, tileBrushCache, sceneBrush);
         }
 
         if (brush is ISceneBrushContent sceneBrushContent)
         {
-            return TryCreateSceneBrushPaint(sceneBrushContent, bounds, out paint);
+            return TryCreateSceneBrushPaint(sceneBrushContent, bounds, out paint, tileBrushCache, sceneBrushContent);
         }
 
         if (brush is IImageBrush imageBrush)
         {
-            return TryCreateImageBrushPaint(imageBrush, bounds, out paint);
+            return TryCreateImageBrushPaint(imageBrush, bounds, out paint, tileBrushCache);
         }
 
         return false;
@@ -1308,7 +1563,7 @@ internal static unsafe class BrushUtil
         return false;
     }
 
-    public static bool TryGetStroke(IPen? pen, Rect bounds, out NativeStrokeSource stroke)
+    public static bool TryGetStroke(IPen? pen, Rect bounds, out NativeStrokeSource stroke, TileBrushIntermediateCache? tileBrushCache = null)
     {
         stroke = default;
 
@@ -1317,7 +1572,7 @@ internal static unsafe class BrushUtil
             return false;
         }
 
-        if (!TryCreatePaint(pen.Brush, bounds, out var paint))
+        if (!TryCreatePaint(pen.Brush, bounds, out var paint, tileBrushCache))
         {
             return false;
         }
@@ -1522,7 +1777,7 @@ internal static unsafe class BrushUtil
         return true;
     }
 
-    private static bool TryCreateImageBrushPaint(IImageBrush brush, Rect bounds, out NativePaintSource paint)
+    private static bool TryCreateImageBrushPaint(IImageBrush brush, Rect bounds, out NativePaintSource paint, TileBrushIntermediateCache? tileBrushCache)
     {
         paint = default;
         var source = TryGetNativeImageBrushSource(brush.Source);
@@ -1534,10 +1789,10 @@ internal static unsafe class BrushUtil
         var contentSize = new Size(
             source.PixelSize.Width * 96.0 / source.Dpi.X,
             source.PixelSize.Height * 96.0 / source.Dpi.Y);
-        return TryCreateTileBrushPaint(brush, source, contentSize, bounds, out paint);
+        return TryCreateTileBrushPaint(brush, source, contentSize, bounds, out paint, tileBrushCache);
     }
 
-    private static bool TryCreateSceneBrushPaint(ISceneBrushContent content, Rect bounds, out NativePaintSource paint)
+    private static bool TryCreateSceneBrushPaint(ISceneBrushContent content, Rect bounds, out NativePaintSource paint, TileBrushIntermediateCache? tileBrushCache, object cacheIdentity)
     {
         paint = default;
         var contentRect = content.Rect;
@@ -1552,23 +1807,38 @@ internal static unsafe class BrushUtil
             return false;
         }
 
-        using var intermediate = new NativeRenderTargetBitmap(ToPixelSize(calc.IntermediateSize), SkiaNativePlatform.DefaultDpi, new SkiaNativeOptions());
-        using (var context = intermediate.CreateDrawingContext())
+        var paintTransform = CreateTileBrushPaintTransform(content.Brush, calc, bounds);
+        var nativeMatrix = paintTransform.ToNative();
+        var opacity = (float)Math.Clamp(content.Brush.Opacity, 0, 1);
+        if (tileBrushCache is not null)
         {
-            var contentTransform = contentRect.Position == default
-                ? calc.IntermediateTransform
-                : Matrix.CreateTranslation(-contentRect.X, -contentRect.Y) * calc.IntermediateTransform;
-
-            context.Clear(Colors.Transparent);
-            context.PushClip(calc.IntermediateClip);
-            content.Render(context, contentTransform);
-            context.PopClip();
+            var key = CreateTileBrushCacheKey(
+                TileBrushCacheKind.Scene,
+                cacheIdentity,
+                sourceHandle: 0,
+                sourceVersion: 0,
+                sourcePixelSize: default,
+                sourceDpi: default,
+                contentRect.Size,
+                bounds.Size,
+                content.Brush,
+                calc,
+                paintTransform);
+            return tileBrushCache.TryCreatePaint(
+                key,
+                ToNativeTileModeX(content.Brush.TileMode),
+                ToNativeTileModeY(content.Brush.TileMode),
+                nativeMatrix,
+                opacity,
+                () => RenderSceneBrushIntermediate(content, contentRect, calc),
+                out paint);
         }
 
-        return TryCreateTileBrushShaderPaint(content.Brush, intermediate, calc, bounds, out paint);
+        using var intermediate = RenderSceneBrushIntermediate(content, contentRect, calc);
+        return TryCreateTileBrushShaderPaint(content.Brush, intermediate, nativeMatrix, opacity, out paint);
     }
 
-    private static bool TryCreateTileBrushPaint(ITileBrush brush, NativeWriteableBitmap source, Size contentSize, Rect bounds, out NativePaintSource paint)
+    private static bool TryCreateTileBrushPaint(ITileBrush brush, NativeWriteableBitmap source, Size contentSize, Rect bounds, out NativePaintSource paint, TileBrushIntermediateCache? tileBrushCache)
     {
         paint = default;
         var calc = new TileBrushCalculation(brush, contentSize, bounds.Size);
@@ -1577,9 +1847,85 @@ internal static unsafe class BrushUtil
             return false;
         }
 
-        using var intermediate = new NativeRenderTargetBitmap(ToPixelSize(calc.IntermediateSize), SkiaNativePlatform.DefaultDpi, new SkiaNativeOptions());
-        using (var context = intermediate.CreateDrawingContext())
+        var paintTransform = CreateTileBrushPaintTransform(brush, calc, bounds);
+        var nativeMatrix = paintTransform.ToNative();
+        var opacity = (float)Math.Clamp(brush.Opacity, 0, 1);
+        if (tileBrushCache is not null)
         {
+            var key = CreateTileBrushCacheKey(
+                TileBrushCacheKind.Image,
+                source,
+                source.NativeBitmap.DangerousGetHandle(),
+                source.Version,
+                source.PixelSize,
+                source.Dpi,
+                contentSize,
+                bounds.Size,
+                brush,
+                calc,
+                paintTransform);
+            return tileBrushCache.TryCreatePaint(
+                key,
+                ToNativeTileModeX(brush.TileMode),
+                ToNativeTileModeY(brush.TileMode),
+                nativeMatrix,
+                opacity,
+                () => RenderImageBrushIntermediate(source, contentSize, calc),
+                out paint);
+        }
+
+        using var intermediate = RenderImageBrushIntermediate(source, contentSize, calc);
+        return TryCreateTileBrushShaderPaint(brush, intermediate, nativeMatrix, opacity, out paint);
+    }
+
+    private static bool TryCreateTileBrushShaderPaint(ITileBrush brush, NativeWriteableBitmap intermediate, NativeMatrix nativeMatrix, float opacity, out NativePaintSource paint)
+    {
+        paint = default;
+        var shader = NativeMethods.ShaderCreateBitmap(
+            intermediate.NativeBitmap,
+            ToNativeTileModeX(brush.TileMode),
+            ToNativeTileModeY(brush.TileMode),
+            &nativeMatrix);
+
+        if (shader.IsInvalid)
+        {
+            shader.Dispose();
+            return false;
+        }
+
+        paint = new NativePaintSource(new NativeColor(1, 1, 1, opacity), shader);
+        return true;
+    }
+
+    private static NativeRenderTargetBitmap RenderSceneBrushIntermediate(ISceneBrushContent content, Rect contentRect, TileBrushCalculation calc)
+    {
+        var intermediate = new NativeRenderTargetBitmap(ToPixelSize(calc.IntermediateSize), SkiaNativePlatform.DefaultDpi, new SkiaNativeOptions());
+        try
+        {
+            using var context = intermediate.CreateDrawingContext();
+            var contentTransform = contentRect.Position == default
+                ? calc.IntermediateTransform
+                : Matrix.CreateTranslation(-contentRect.X, -contentRect.Y) * calc.IntermediateTransform;
+
+            context.Clear(Colors.Transparent);
+            context.PushClip(calc.IntermediateClip);
+            content.Render(context, contentTransform);
+            context.PopClip();
+            return intermediate;
+        }
+        catch
+        {
+            intermediate.Dispose();
+            throw;
+        }
+    }
+
+    private static NativeRenderTargetBitmap RenderImageBrushIntermediate(NativeWriteableBitmap source, Size contentSize, TileBrushCalculation calc)
+    {
+        var intermediate = new NativeRenderTargetBitmap(ToPixelSize(calc.IntermediateSize), SkiaNativePlatform.DefaultDpi, new SkiaNativeOptions());
+        try
+        {
+            using var context = intermediate.CreateDrawingContext();
             var sourceRect = new Rect(contentSize);
             var targetRect = new Rect(contentSize);
 
@@ -1589,14 +1935,17 @@ internal static unsafe class BrushUtil
             context.DrawBitmap(source, 1, sourceRect, targetRect);
             context.Transform = Matrix.Identity;
             context.PopClip();
+            return intermediate;
         }
-
-        return TryCreateTileBrushShaderPaint(brush, intermediate, calc, bounds, out paint);
+        catch
+        {
+            intermediate.Dispose();
+            throw;
+        }
     }
 
-    private static bool TryCreateTileBrushShaderPaint(ITileBrush brush, NativeWriteableBitmap intermediate, TileBrushCalculation calc, Rect bounds, out NativePaintSource paint)
+    private static Matrix CreateTileBrushPaintTransform(ITileBrush brush, TileBrushCalculation calc, Rect bounds)
     {
-        paint = default;
         var paintTransform =
             brush.TileMode == TileMode.None
                 ? Matrix.Identity
@@ -1612,22 +1961,41 @@ internal static unsafe class BrushUtil
             paintTransform = paintTransform * Matrix.CreateTranslation(bounds.X, bounds.Y);
         }
 
-        var nativeMatrix = paintTransform.ToNative();
-        var shader = NativeMethods.ShaderCreateBitmap(
-            intermediate.NativeBitmap,
-            ToNativeTileModeX(brush.TileMode),
-            ToNativeTileModeY(brush.TileMode),
-            &nativeMatrix);
-
-        if (shader.IsInvalid)
-        {
-            shader.Dispose();
-            return false;
-        }
-
-        paint = new NativePaintSource(new NativeColor(1, 1, 1, (float)Math.Clamp(brush.Opacity, 0, 1)), shader);
-        return true;
+        return paintTransform;
     }
+
+    private static TileBrushCacheKey CreateTileBrushCacheKey(
+        TileBrushCacheKind kind,
+        object? identity,
+        nint sourceHandle,
+        int sourceVersion,
+        PixelSize sourcePixelSize,
+        Vector sourceDpi,
+        Size contentSize,
+        Size targetSize,
+        ITileBrush brush,
+        TileBrushCalculation calc,
+        Matrix paintTransform) =>
+        new(
+            kind,
+            identity,
+            sourceHandle,
+            sourceVersion,
+            sourcePixelSize,
+            sourceDpi,
+            contentSize,
+            targetSize,
+            calc.SourceRect,
+            calc.DestinationRect,
+            calc.IntermediateSize,
+            calc.IntermediateClip,
+            calc.IntermediateTransform,
+            paintTransform,
+            brush.TileMode,
+            brush.Stretch,
+            brush.AlignmentX,
+            brush.AlignmentY,
+            brush.Opacity);
 
     private static bool TryCreateBrushLocalMatrix(IBrush brush, Rect bounds, out NativeMatrix matrix)
     {
