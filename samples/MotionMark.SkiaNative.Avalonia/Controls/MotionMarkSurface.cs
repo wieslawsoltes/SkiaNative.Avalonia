@@ -31,8 +31,8 @@ internal sealed class MotionMarkSurface : Control
     public static readonly StyledProperty<bool> UseCachedMeshProperty =
         AvaloniaProperty.Register<MotionMarkSurface, bool>(nameof(UseCachedMesh));
 
-    public static readonly StyledProperty<bool> AnimateMotionProperty =
-        AvaloniaProperty.Register<MotionMarkSurface, bool>(nameof(AnimateMotion), true);
+    public static readonly StyledProperty<bool> FastSkiaSharpParityModeProperty =
+        AvaloniaProperty.Register<MotionMarkSurface, bool>(nameof(FastSkiaSharpParityMode));
 
     private static readonly Color s_backgroundColor = Color.FromRgb(12, 16, 24);
     private static readonly Color s_gridColor = Color.FromArgb(38, 255, 255, 255);
@@ -43,10 +43,8 @@ internal sealed class MotionMarkSurface : Control
     private bool _isAttached;
     private bool _mutateSplitsValue;
     private bool _useCachedMeshValue;
-    private bool _animateMotionValue = true;
+    private bool _fastSkiaSharpParityModeValue;
     private TimeSpan? _lastFrameTimestamp;
-    private TimeSpan? _animationStartTimestamp;
-    private long _animationTicks;
     private double _frameAccumulatorMs;
     private int _statsFrameCount;
     private long _renderTicksAccumulator;
@@ -63,7 +61,7 @@ internal sealed class MotionMarkSurface : Control
     {
         AffectsRender<MotionMarkSurface>(ComplexityProperty, MutateSplitsProperty);
         AffectsRender<MotionMarkSurface>(UseCachedMeshProperty);
-        AffectsRender<MotionMarkSurface>(AnimateMotionProperty);
+        AffectsRender<MotionMarkSurface>(FastSkiaSharpParityModeProperty);
     }
 
     public MotionMarkSurface()
@@ -89,10 +87,10 @@ internal sealed class MotionMarkSurface : Control
         set => SetValue(UseCachedMeshProperty, value);
     }
 
-    public bool AnimateMotion
+    public bool FastSkiaSharpParityMode
     {
-        get => GetValue(AnimateMotionProperty);
-        set => SetValue(AnimateMotionProperty, value);
+        get => GetValue(FastSkiaSharpParityModeProperty);
+        set => SetValue(FastSkiaSharpParityModeProperty, value);
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
@@ -128,9 +126,18 @@ internal sealed class MotionMarkSurface : Control
 
             RequestNextFrame();
         }
-        else if (change.Property == AnimateMotionProperty)
+        else if (change.Property == FastSkiaSharpParityModeProperty)
         {
-            Volatile.Write(ref _animateMotionValue, AnimateMotion);
+            var parityMode = FastSkiaSharpParityMode;
+            Volatile.Write(ref _fastSkiaSharpParityModeValue, parityMode);
+            if (parityMode)
+            {
+                lock (_sceneLock)
+                {
+                    DisposeCachedMesh();
+                }
+            }
+
             RequestNextFrame();
         }
     }
@@ -141,8 +148,7 @@ internal sealed class MotionMarkSurface : Control
         _isAttached = true;
         Volatile.Write(ref _mutateSplitsValue, MutateSplits);
         Volatile.Write(ref _useCachedMeshValue, UseCachedMesh);
-        Volatile.Write(ref _animateMotionValue, AnimateMotion);
-        Volatile.Write(ref _animationTicks, 0);
+        Volatile.Write(ref _fastSkiaSharpParityModeValue, FastSkiaSharpParityMode);
         lock (_sceneLock)
         {
             _scene.SetComplexity(Complexity);
@@ -158,8 +164,6 @@ internal sealed class MotionMarkSurface : Control
         _isAttached = false;
         _frameRequested = false;
         _lastFrameTimestamp = null;
-        _animationStartTimestamp = null;
-        Volatile.Write(ref _animationTicks, 0);
         _frameAccumulatorMs = 0;
         _statsFrameCount = 0;
         lock (_sceneLock)
@@ -217,9 +221,6 @@ internal sealed class MotionMarkSurface : Control
             return;
         }
 
-        _animationStartTimestamp ??= timestamp;
-        Volatile.Write(ref _animationTicks, (timestamp - _animationStartTimestamp.Value).Ticks);
-
         if (_lastFrameTimestamp is TimeSpan last)
         {
             var deltaMs = (timestamp - last).TotalMilliseconds;
@@ -272,11 +273,12 @@ internal sealed class MotionMarkSurface : Control
 
     private void DrawMotionMarkScene(SkiaNativeDirectCanvas canvas, Rect bounds)
     {
-        var mutateSplits = Volatile.Read(ref _mutateSplitsValue);
-        var useCachedMesh = Volatile.Read(ref _useCachedMeshValue);
+        var parityMode = Volatile.Read(ref _fastSkiaSharpParityModeValue);
+        var mutateSplits = parityMode || Volatile.Read(ref _mutateSplitsValue);
+        var useCachedMesh = !parityMode && Volatile.Read(ref _useCachedMeshValue);
         lock (_sceneLock)
         {
-            var renderData = _scene.GetRenderData(bounds.Size, mutateSplits);
+            var renderData = _scene.GetRenderData(bounds.Size, parityMode);
             _lastElementCount = renderData.ElementCount;
             _lastPathRunCount = renderData.PathRunCount;
 
@@ -288,7 +290,12 @@ internal sealed class MotionMarkSurface : Control
                     1,
                     SkiaNativeStrokeCap.Round,
                     SkiaNativeStrokeJoin.Round,
-                    antiAlias: false);
+                    antiAlias: parityMode);
+                if (mutateSplits)
+                {
+                    _scene.MutateSplitsForNextFrame(bounds.Size, parityMode);
+                }
+
                 return;
             }
 
@@ -301,38 +308,6 @@ internal sealed class MotionMarkSurface : Control
 
             canvas.DrawPathStreamMesh(_cachedMesh);
         }
-    }
-
-    private void DrawAnimatedMotionMarkScene(SkiaNativeDirectCanvas canvas, Rect bounds)
-    {
-        if (!Volatile.Read(ref _animateMotionValue))
-        {
-            DrawMotionMarkScene(canvas, bounds);
-            return;
-        }
-
-        var animationSeconds = TimeSpan.FromTicks(Volatile.Read(ref _animationTicks)).TotalSeconds;
-        var transform = CreateSmoothMotionTransform(bounds, animationSeconds);
-        canvas.Save();
-        canvas.ConcatTransform(transform);
-        DrawMotionMarkScene(canvas, bounds);
-        canvas.Restore();
-    }
-
-    private static Matrix CreateSmoothMotionTransform(Rect bounds, double seconds)
-    {
-        var centerX = bounds.X + bounds.Width * 0.5;
-        var centerY = bounds.Y + bounds.Height * 0.5;
-        var amplitude = Math.Min(bounds.Width, bounds.Height);
-        var translateX = Math.Sin(seconds * 0.90) * amplitude * 0.015;
-        var translateY = Math.Cos(seconds * 1.10) * amplitude * 0.012;
-        var scale = 1.0 + Math.Sin(seconds * 0.70) * 0.012;
-        var angle = Math.Sin(seconds * 0.55) * 0.018;
-
-        return Matrix.CreateTranslation(-centerX, -centerY) *
-            Matrix.CreateScale(scale, scale) *
-            Matrix.CreateRotation(angle) *
-            Matrix.CreateTranslation(centerX + translateX, centerY + translateY);
     }
 
     private void DisposeCachedMesh()
@@ -371,8 +346,12 @@ internal sealed class MotionMarkSurface : Control
                 canvas.Save();
                 canvas.PushClip(_bounds);
                 canvas.FillRectangle(s_backgroundColor, _bounds);
-                DrawGrid(canvas, _bounds);
-                _owner.DrawAnimatedMotionMarkScene(canvas, _bounds);
+                if (!_owner.IsFastSkiaSharpParityMode)
+                {
+                    DrawGrid(canvas, _bounds);
+                }
+
+                _owner.DrawMotionMarkScene(canvas, _bounds);
 
                 canvas.Restore();
             }
@@ -404,4 +383,6 @@ internal sealed class MotionMarkSurface : Control
             }
         }
     }
+
+    private bool IsFastSkiaSharpParityMode => Volatile.Read(ref _fastSkiaSharpParityModeValue);
 }

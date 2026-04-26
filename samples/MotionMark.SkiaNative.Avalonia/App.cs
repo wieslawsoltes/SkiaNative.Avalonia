@@ -8,6 +8,8 @@ namespace MotionMark.SkiaNative.AvaloniaApp;
 
 internal sealed class App : Application
 {
+    public static MotionMarkSampleOptions StartupOptions { get; set; }
+
     public override void Initialize()
     {
         RequestedThemeVariant = ThemeVariant.Dark;
@@ -25,12 +27,12 @@ internal sealed class App : Application
                 MinWidth = 840,
                 MinHeight = 540,
                 Title = "MotionMark SkiaNative.Avalonia",
-                Content = new MainView()
+                Content = new MainView(StartupOptions)
             };
         }
         else if (ApplicationLifetime is ISingleViewApplicationLifetime singleView)
         {
-            singleView.MainView = new MainView();
+            singleView.MainView = new MainView(StartupOptions);
         }
 
         base.OnFrameworkInitializationCompleted();

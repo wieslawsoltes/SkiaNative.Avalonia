@@ -33,10 +33,11 @@ internal sealed class MotionMarkScene
     ];
 
     private readonly List<Element> _elements = [];
-    private readonly Random _random = new(12345);
+    private readonly Random _random = new();
     private GridPoint _lastGridPoint = new(GridWidth / 2, GridHeight / 2);
     private SkiaNativePathStreamElement[] _streamElements = [];
     private Size _streamSize;
+    private bool _streamFastSkiaSharpParityMode;
     private bool _streamDirty = true;
     private int _complexity = 8;
     private int _pathRunCount;
@@ -58,30 +59,33 @@ internal sealed class MotionMarkScene
         Resize(ComputeElementCount(_complexity));
     }
 
-    public MotionMarkSceneRenderData GetRenderData(Size size, bool mutateSplits)
+    public MotionMarkSceneRenderData GetRenderData(Size size, bool fastSkiaSharpParityMode)
     {
         Resize(ComputeElementCount(_complexity));
-
-        if (mutateSplits)
-        {
-            MutateSplitFlags(size);
-        }
-
-        EnsureStreamElements(size);
+        EnsureStreamElements(size, fastSkiaSharpParityMode);
         return new MotionMarkSceneRenderData(_streamElements, _elements.Count, _pathRunCount, _version);
+    }
+
+    public void MutateSplitsForNextFrame(Size size, bool fastSkiaSharpParityMode)
+    {
+        MutateSplitFlags(size, fastSkiaSharpParityMode);
     }
 
     public void ClearSnapshot()
     {
         _streamElements = [];
         _streamSize = default;
+        _streamFastSkiaSharpParityMode = false;
         _streamDirty = true;
         _pathRunCount = 0;
     }
 
-    private void EnsureStreamElements(Size size)
+    private void EnsureStreamElements(Size size, bool fastSkiaSharpParityMode)
     {
-        if (!_streamDirty && _streamElements.Length == _elements.Count && _streamSize == size)
+        if (!_streamDirty &&
+            _streamElements.Length == _elements.Count &&
+            _streamSize == size &&
+            _streamFastSkiaSharpParityMode == fastSkiaSharpParityMode)
         {
             return;
         }
@@ -91,7 +95,7 @@ internal sealed class MotionMarkScene
             _streamElements = new SkiaNativePathStreamElement[_elements.Count];
         }
 
-        var layout = CalculateLayout(size);
+        var layout = CalculateLayout(size, fastSkiaSharpParityMode);
         var elements = CollectionsMarshal.AsSpan(_elements);
         for (var i = 0; i < elements.Length; i++)
         {
@@ -99,6 +103,7 @@ internal sealed class MotionMarkScene
         }
 
         _streamSize = size;
+        _streamFastSkiaSharpParityMode = fastSkiaSharpParityMode;
         _pathRunCount = CalculatePathRunCount(elements);
         _streamDirty = false;
         _version++;
@@ -139,10 +144,10 @@ internal sealed class MotionMarkScene
         _version++;
     }
 
-    private void MutateSplitFlags(Size size)
+    private void MutateSplitFlags(Size size, bool fastSkiaSharpParityMode)
     {
         var changed = false;
-        var layout = CalculateLayout(size);
+        var layout = CalculateLayout(size, fastSkiaSharpParityMode);
         var elements = CollectionsMarshal.AsSpan(_elements);
         for (var i = 0; i < elements.Length; i++)
         {
@@ -174,10 +179,7 @@ internal sealed class MotionMarkScene
 
         var element = new Element
         {
-            Start = last,
-            Color = s_palette[_random.Next(s_palette.Length)],
-            Width = (float)(Math.Pow(_random.NextDouble(), 5) * 20.0 + 1.0),
-            Split = _random.Next(2) == 0
+            Start = last
         };
 
         if (segmentType < 2)
@@ -202,6 +204,9 @@ internal sealed class MotionMarkScene
             element.End = end;
         }
 
+        element.Color = s_palette[_random.Next(s_palette.Length)];
+        element.Width = (float)(Math.Pow(_random.NextDouble(), 5) * 20.0 + 1.0);
+        element.Split = _random.Next(2) == 0;
         return element;
     }
 
@@ -244,11 +249,19 @@ internal sealed class MotionMarkScene
             element.End.ToPoint(layout));
     }
 
-    private static MotionMarkSceneLayout CalculateLayout(Size size)
+    private static MotionMarkSceneLayout CalculateLayout(Size size, bool fastSkiaSharpParityMode)
     {
-        var scaleX = Math.Max(1, size.Width / (GridWidth + 1));
-        var scaleY = Math.Max(1, size.Height / (GridHeight + 1));
-        return new MotionMarkSceneLayout(scaleX, scaleY);
+        var scaleX = size.Width / (GridWidth + 1);
+        var scaleY = size.Height / (GridHeight + 1);
+        if (!fastSkiaSharpParityMode)
+        {
+            return new MotionMarkSceneLayout(Math.Max(1, scaleX), Math.Max(1, scaleY), 0, 0);
+        }
+
+        var uniformScale = Math.Min(scaleX, scaleY);
+        var offsetX = (size.Width - uniformScale * (GridWidth + 1)) * 0.5;
+        var offsetY = (size.Height - uniformScale * (GridHeight + 1)) * 0.5;
+        return new MotionMarkSceneLayout(uniformScale, uniformScale, offsetX, offsetY);
     }
 
     private static int CalculatePathRunCount(ReadOnlySpan<Element> elements)
@@ -306,12 +319,12 @@ internal sealed class MotionMarkScene
         public int Y { get; } = y;
 
         public Point ToPoint(MotionMarkSceneLayout layout) => new(
-            (X + 0.5) * layout.ScaleX,
-            (Y + 0.5) * layout.ScaleY);
+            layout.OffsetX + (X + 0.5) * layout.ScaleX,
+            layout.OffsetY + (Y + 0.5) * layout.ScaleY);
     }
 }
 
-internal readonly record struct MotionMarkSceneLayout(double ScaleX, double ScaleY);
+internal readonly record struct MotionMarkSceneLayout(double ScaleX, double ScaleY, double OffsetX, double OffsetY);
 
 internal readonly record struct MotionMarkSceneRenderData(
     SkiaNativePathStreamElement[] Elements,

@@ -21,7 +21,7 @@ internal sealed class MainWindowViewModel : INotifyPropertyChanged
     private double _platformPresentMs;
     private bool _mutateSplits;
     private bool _useCachedMesh;
-    private bool _animateMotion = true;
+    private bool _fastSkiaSharpParityMode;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -65,14 +65,14 @@ internal sealed class MainWindowViewModel : INotifyPropertyChanged
         }
     }
 
-    public bool AnimateMotion
+    public bool FastSkiaSharpParityMode
     {
-        get => _animateMotion;
+        get => _fastSkiaSharpParityMode;
         set
         {
-            if (_animateMotion != value)
+            if (_fastSkiaSharpParityMode != value)
             {
-                _animateMotion = value;
+                _fastSkiaSharpParityMode = value;
                 OnPropertyChanged();
             }
         }

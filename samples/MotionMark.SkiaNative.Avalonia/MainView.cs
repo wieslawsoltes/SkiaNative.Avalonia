@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -25,13 +26,17 @@ internal sealed class MainView : UserControl
     private readonly TextBlock _nativeFlushValue;
     private readonly TextBlock _nativeSessionEndValue;
     private readonly TextBlock _platformPresentValue;
-    private readonly DateTime _modeInputEnabledAtUtc = DateTime.UtcNow.AddSeconds(2);
+    private readonly List<Action> _modeButtonRefreshers = [];
+    private readonly DateTime _modeInputEnabledAtUtc = DateTime.UtcNow.AddSeconds(5);
 
     public MainView()
+        : this(default)
     {
-        _viewModel.AnimateMotion = true;
-        _viewModel.MutateSplits = false;
-        _viewModel.UseCachedMesh = false;
+    }
+
+    public MainView(MotionMarkSampleOptions options)
+    {
+        InitializeMode(options.FastSkiaSharpParityMode);
         DataContext = _viewModel;
 
         _surface = new MotionMarkSurface
@@ -39,7 +44,7 @@ internal sealed class MainView : UserControl
             Complexity = _viewModel.Complexity,
             MutateSplits = _viewModel.MutateSplits,
             UseCachedMesh = _viewModel.UseCachedMesh,
-            AnimateMotion = _viewModel.AnimateMotion,
+            FastSkiaSharpParityMode = _viewModel.FastSkiaSharpParityMode,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
@@ -96,7 +101,7 @@ internal sealed class MainView : UserControl
                     },
                     new TextBlock
                     {
-                        Text = "Port of the FastSkiaSharp MotionMark sample. Avalonia records path drawing, SkiaNative executes it through the C++ Skia bulk command buffer.",
+                        Text = "Port of the FastSkiaSharp MotionMark sample. Use --fastskiasharp-parity or the mode button for uniform layout, split mutation, and antialiased path rendering.",
                         FontSize = 13,
                         Foreground = new SolidColorBrush(Color.FromRgb(176, 188, 208))
                     }
@@ -153,22 +158,20 @@ internal sealed class MainView : UserControl
             }
         };
 
-        var animateMotion = ModeButton(
-            "Smooth animation",
-            () => _viewModel.AnimateMotion,
-            value =>
-            {
-                _viewModel.AnimateMotion = value;
-                _surface.AnimateMotion = value;
-            });
+        var parityMode = ModeButton(
+            "FastSkiaSharp parity",
+            () => _viewModel.FastSkiaSharpParityMode,
+            SetFastSkiaSharpParityMode);
 
         var mutate = ModeButton(
             "Split mutation stress",
             () => _viewModel.MutateSplits,
             value =>
             {
+                _viewModel.FastSkiaSharpParityMode = false;
                 _viewModel.MutateSplits = value;
-                _surface.MutateSplits = value;
+                ApplyMotionModes();
+                RefreshModeButtons();
             });
 
         var cacheMesh = ModeButton(
@@ -176,8 +179,10 @@ internal sealed class MainView : UserControl
             () => _viewModel.UseCachedMesh,
             value =>
             {
+                _viewModel.FastSkiaSharpParityMode = false;
                 _viewModel.UseCachedMesh = value;
-                _surface.UseCachedMesh = value;
+                ApplyMotionModes();
+                RefreshModeButtons();
             });
 
         return new Border
@@ -202,7 +207,7 @@ internal sealed class MainView : UserControl
                     },
                     slider,
                     MetricRow("Complexity", _complexityValue),
-                    animateMotion,
+                    parityMode,
                     mutate,
                     cacheMesh,
                     new Border
@@ -246,6 +251,35 @@ internal sealed class MainView : UserControl
     {
         _viewModel.Update(stats);
         UpdateMetrics();
+    }
+
+    private void SetFastSkiaSharpParityMode(bool enabled)
+    {
+        InitializeMode(enabled);
+        ApplyMotionModes();
+        RefreshModeButtons();
+    }
+
+    private void InitializeMode(bool fastSkiaSharpParityMode)
+    {
+        _viewModel.FastSkiaSharpParityMode = fastSkiaSharpParityMode;
+        _viewModel.MutateSplits = fastSkiaSharpParityMode;
+        _viewModel.UseCachedMesh = false;
+    }
+
+    private void ApplyMotionModes()
+    {
+        _surface.FastSkiaSharpParityMode = _viewModel.FastSkiaSharpParityMode;
+        _surface.MutateSplits = _viewModel.MutateSplits;
+        _surface.UseCachedMesh = _viewModel.UseCachedMesh;
+    }
+
+    private void RefreshModeButtons()
+    {
+        foreach (var refresh in _modeButtonRefreshers)
+        {
+            refresh();
+        }
     }
 
     private void UpdateMetrics()
@@ -308,6 +342,7 @@ internal sealed class MainView : UserControl
     {
         var button = new Button
         {
+            Focusable = false,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             Padding = new Thickness(10, 7)
@@ -325,6 +360,8 @@ internal sealed class MainView : UserControl
                 : Color.FromRgb(75, 88, 112));
             button.Foreground = Brushes.White;
         }
+
+        _modeButtonRefreshers.Add(Update);
 
         button.Click += (_, _) =>
         {

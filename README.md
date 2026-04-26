@@ -196,7 +196,13 @@ Run the MotionMark-style path workload ported from the FastSkiaSharp SkiaSharp s
 dotnet run --project samples/MotionMark.SkiaNative.Avalonia/MotionMark.SkiaNative.Avalonia.csproj
 ```
 
-This sample intentionally does not reference SkiaSharp and does not render its workload through Avalonia `Geometry` / `Pen` primitives. It prepares `SkiaNativePathCommand` snapshots, submits an Avalonia `ICustomDrawOperation` only for render-thread scheduling, leases `ISkiaNativeApiLeaseFeature`, and encodes the background, grid, and path strokes directly into the SkiaNative command buffer. With the SkiaNative backend on macOS, those commands target the Metal/Ganesh GPU surface and execute through the native C++ Skia path. The UI exposes complexity, optional per-frame path split mutation, frame timing, native command count, transition count, and GPU cache usage.
+FastSkiaSharp parity mode disables SkiaNative-only presentation tweaks and uses the comparison-friendly workload shape: uniform centered grid scaling, per-frame split mutation, antialiased path strokes, and no cached path mesh.
+
+```bash
+dotnet run --project samples/MotionMark.SkiaNative.Avalonia/MotionMark.SkiaNative.Avalonia.csproj -- --fastskiasharp-parity
+```
+
+This sample intentionally does not reference SkiaSharp and does not render its workload through Avalonia `Geometry` / `Pen` primitives. It prepares `SkiaNativePathCommand` snapshots, submits an Avalonia `ICustomDrawOperation` only for render-thread scheduling, leases `ISkiaNativeApiLeaseFeature`, and encodes the background, grid, and path strokes directly into the SkiaNative command buffer. With the SkiaNative backend on macOS, those commands target the Metal/Ganesh GPU surface and execute through the native C++ Skia path. The UI exposes complexity, FastSkiaSharp parity mode, optional per-frame path split mutation, frame timing, native command count, transition count, and GPU cache usage.
 
 ## Validation
 
