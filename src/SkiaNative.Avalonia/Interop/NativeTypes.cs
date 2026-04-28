@@ -105,6 +105,48 @@ internal enum NativeStrokeJoin : uint
     Bevel = 2,
 }
 
+internal enum NativeMeshAttributeType : uint
+{
+    Float = 0,
+    Float2 = 1,
+    Float3 = 2,
+    Float4 = 3,
+    UByte4Unorm = 4,
+}
+
+internal enum NativeMeshVaryingType : uint
+{
+    Float = 0,
+    Float2 = 1,
+    Float3 = 2,
+    Float4 = 3,
+    Half = 4,
+    Half2 = 5,
+    Half3 = 6,
+    Half4 = 7,
+}
+
+internal enum NativeMeshMode : uint
+{
+    Triangles = 0,
+    TriangleStrip = 1,
+}
+
+internal enum NativeMeshUniformType : uint
+{
+    Float = 0,
+    Float2 = 1,
+    Float3 = 2,
+    Float4 = 3,
+    Float2x2 = 4,
+    Float3x3 = 5,
+    Float4x4 = 6,
+    Int = 7,
+    Int2 = 8,
+    Int3 = 9,
+    Int4 = 10,
+}
+
 [StructLayout(LayoutKind.Sequential)]
 internal struct NativeColor
 {
@@ -251,4 +293,29 @@ internal struct NativeGradientStop
 {
     public float Offset;
     public NativeColor Color;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeMeshAttribute
+{
+    public NativeMeshAttributeType Type;
+    public uint Offset;
+    public nint Name;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeMeshVarying
+{
+    public NativeMeshVaryingType Type;
+    public nint Name;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeMeshUniformInfo
+{
+    public NativeMeshUniformType Type;
+    public uint Count;
+    public uint Flags;
+    public uint Offset;
+    public uint Size;
 }

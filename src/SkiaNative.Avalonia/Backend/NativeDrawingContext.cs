@@ -174,6 +174,7 @@ internal sealed class NativeDrawingContext : IDrawingContextImpl, IDrawingContex
         {
             return _directFeature ??= new SkiaNativeApiLeaseFeature(
                 _session,
+                _gpuContext,
                 _options.InitialCommandBufferCapacity,
                 FlushPendingCommands,
                 ReportDirectFlush);

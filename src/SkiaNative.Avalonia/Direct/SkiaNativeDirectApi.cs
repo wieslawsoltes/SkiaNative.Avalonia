@@ -40,13 +40,15 @@ public sealed class SkiaNativeDirectCanvas : IDisposable
     private const uint ShapeAntiAliasFlag = 1u << 16;
 
     private readonly NativeSessionHandle _session;
+    private readonly NativeContextHandle? _context;
     private readonly CommandBuffer _commands;
     private readonly Action<CommandBufferFlushResult> _reportFlush;
     private bool _disposed;
 
-    internal SkiaNativeDirectCanvas(NativeSessionHandle session, int initialCapacity, Action<CommandBufferFlushResult> reportFlush)
+    internal SkiaNativeDirectCanvas(NativeSessionHandle session, NativeContextHandle? context, int initialCapacity, Action<CommandBufferFlushResult> reportFlush)
     {
         _session = session;
+        _context = context;
         _commands = new CommandBuffer(initialCapacity);
         _reportFlush = reportFlush;
     }
@@ -279,6 +281,107 @@ public sealed class SkiaNativeDirectCanvas : IDisposable
         return CombineFlushResults(pending, batch).ToDirectResult();
     }
 
+    public unsafe SkiaNativeMesh CreateMesh<TVertex>(
+        SkiaNativeMeshSpecification specification,
+        SkiaNativeMeshMode mode,
+        ReadOnlySpan<TVertex> vertices,
+        ReadOnlySpan<ushort> indices,
+        ReadOnlySpan<byte> uniforms,
+        Rect bounds)
+        where TVertex : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(specification);
+        ThrowIfDisposed();
+        if (vertices.Length < 3)
+        {
+            throw new ArgumentException("A mesh requires at least three vertices.", nameof(vertices));
+        }
+
+        var vertexBytes = MemoryMarshal.AsBytes(vertices);
+        return CreateMesh(specification, mode, vertexBytes, vertices.Length, indices, uniforms, bounds);
+    }
+
+    public unsafe SkiaNativeMesh CreateMesh(
+        SkiaNativeMeshSpecification specification,
+        SkiaNativeMeshMode mode,
+        ReadOnlySpan<byte> vertexBytes,
+        int vertexCount,
+        ReadOnlySpan<ushort> indices,
+        ReadOnlySpan<byte> uniforms,
+        Rect bounds)
+    {
+        ArgumentNullException.ThrowIfNull(specification);
+        ThrowIfDisposed();
+        if (vertexBytes.IsEmpty || vertexCount < 3)
+        {
+            throw new ArgumentException("A mesh requires at least three vertices.", nameof(vertexBytes));
+        }
+
+        if (vertexBytes.Length % 4 != 0)
+        {
+            throw new ArgumentException("Vertex data size must be 4-byte aligned.", nameof(vertexBytes));
+        }
+
+        if (!indices.IsEmpty && indices.Length < 3)
+        {
+            throw new ArgumentException("An indexed mesh requires at least three indices.", nameof(indices));
+        }
+
+        if (!indices.IsEmpty && (indices.Length * sizeof(ushort)) % 4 != 0)
+        {
+            throw new ArgumentException("Index data size must be 4-byte aligned for GPU updates.", nameof(indices));
+        }
+
+        fixed (byte* vertexPtr = vertexBytes)
+        fixed (ushort* indexPtr = indices)
+        fixed (byte* uniformPtr = uniforms)
+        {
+            var handle = NativeMethods.MeshCreate(
+                GetContextHandle(),
+                specification.NativeHandle,
+                (NativeMeshMode)mode,
+                vertexPtr,
+                vertexBytes.Length,
+                vertexCount,
+                indices.IsEmpty ? null : indexPtr,
+                indices.Length,
+                uniforms.IsEmpty ? null : uniformPtr,
+                uniforms.Length,
+                (float)bounds.Left,
+                (float)bounds.Top,
+                (float)bounds.Right,
+                (float)bounds.Bottom);
+
+            if (handle.IsInvalid)
+            {
+                handle.Dispose();
+                throw new InvalidOperationException("Native Skia mesh creation failed.");
+            }
+
+            GC.KeepAlive(_context);
+            return new SkiaNativeMesh(handle, _context, specification);
+        }
+    }
+
+    public SkiaNativeDirectFlushResult DrawMesh(SkiaNativeMesh mesh, Color color, bool antiAlias = true)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+        ThrowIfDisposed();
+
+        var pending = FlushCommandBuffer();
+        var stopwatch = Stopwatch.StartNew();
+        var nativeResult = NativeMethods.SessionDrawMesh(
+            _session,
+            mesh.NativeHandle,
+            0,
+            color.ToNative(),
+            antiAlias ? ShapeAntiAliasFlag : 0);
+        stopwatch.Stop();
+        var batch = new CommandBufferFlushResult(1, 1, stopwatch.Elapsed, nativeResult);
+        _reportFlush(batch);
+        return CombineFlushResults(pending, batch).ToDirectResult();
+    }
+
     public unsafe SkiaNativeDirectFlushResult FillPaths(ReadOnlySpan<SkiaNativePathFill> fills)
     {
         ThrowIfDisposed();
@@ -358,6 +461,8 @@ public sealed class SkiaNativeDirectCanvas : IDisposable
         _reportFlush(result);
         return result;
     }
+
+    private nint GetContextHandle() => _context?.DangerousGetHandle() ?? 0;
 
     private static CommandBufferFlushResult CombineFlushResults(CommandBufferFlushResult first, CommandBufferFlushResult second) =>
         new(
@@ -449,6 +554,369 @@ public sealed class SkiaNativePathStreamMesh : IDisposable
         _handle = null;
         handle.Dispose();
     }
+}
+
+/// <summary>
+/// Attribute type used by a custom Skia mesh vertex buffer.
+/// </summary>
+public enum SkiaNativeMeshAttributeType : uint
+{
+    Float = 0,
+    Float2 = 1,
+    Float3 = 2,
+    Float4 = 3,
+    UByte4Unorm = 4,
+}
+
+/// <summary>
+/// Varying type passed from a custom mesh vertex shader to its fragment shader.
+/// </summary>
+public enum SkiaNativeMeshVaryingType : uint
+{
+    Float = 0,
+    Float2 = 1,
+    Float3 = 2,
+    Float4 = 3,
+    Half = 4,
+    Half2 = 5,
+    Half3 = 6,
+    Half4 = 7,
+}
+
+public enum SkiaNativeMeshMode : uint
+{
+    Triangles = 0,
+    TriangleStrip = 1,
+}
+
+public enum SkiaNativeMeshUniformType : uint
+{
+    Float = 0,
+    Float2 = 1,
+    Float3 = 2,
+    Float4 = 3,
+    Float2x2 = 4,
+    Float3x3 = 5,
+    Float4x4 = 6,
+    Int = 7,
+    Int2 = 8,
+    Int3 = 9,
+    Int4 = 10,
+}
+
+public readonly record struct SkiaNativeMeshAttribute(SkiaNativeMeshAttributeType Type, int Offset, string Name);
+
+public readonly record struct SkiaNativeMeshVarying(SkiaNativeMeshVaryingType Type, string Name);
+
+public readonly record struct SkiaNativeMeshUniformInfo(
+    SkiaNativeMeshUniformType Type,
+    int Count,
+    uint Flags,
+    int Offset,
+    int Size);
+
+/// <summary>
+/// Compiled Skia custom mesh shader specification. Create once and reuse for compatible meshes.
+/// </summary>
+public sealed class SkiaNativeMeshSpecification : IDisposable
+{
+    private NativeMeshSpecificationHandle? _handle;
+
+    private SkiaNativeMeshSpecification(NativeMeshSpecificationHandle handle)
+    {
+        _handle = handle;
+        Stride = NativeMethods.MeshSpecGetStride(handle);
+        UniformSize = NativeMethods.MeshSpecGetUniformSize(handle);
+    }
+
+    public bool IsDisposed => _handle is null;
+
+    public int Stride { get; }
+
+    public int UniformSize { get; }
+
+    internal NativeMeshSpecificationHandle NativeHandle
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_handle is null, this);
+            return _handle;
+        }
+    }
+
+    public static unsafe SkiaNativeMeshSpecification Create(
+        ReadOnlySpan<SkiaNativeMeshAttribute> attributes,
+        int vertexStride,
+        ReadOnlySpan<SkiaNativeMeshVarying> varyings,
+        string vertexShader,
+        string fragmentShader)
+    {
+        if (attributes.IsEmpty)
+        {
+            throw new ArgumentException("A mesh specification requires at least one attribute.", nameof(attributes));
+        }
+
+        if (vertexStride <= 0 || vertexStride % 4 != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(vertexStride), "Mesh vertex stride must be positive and 4-byte aligned.");
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(vertexShader);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fragmentShader);
+
+        var nativeAttributes = new NativeMeshAttribute[attributes.Length];
+        var nativeVaryings = new NativeMeshVarying[varyings.Length];
+        var namePointers = new nint[attributes.Length + varyings.Length];
+        nint vertexShaderPtr = 0;
+        nint fragmentShaderPtr = 0;
+
+        try
+        {
+            for (var i = 0; i < attributes.Length; i++)
+            {
+                if (string.IsNullOrWhiteSpace(attributes[i].Name))
+                {
+                    throw new ArgumentException("Mesh attribute names must be non-empty.", nameof(attributes));
+                }
+
+                var ptr = Marshal.StringToCoTaskMemUTF8(attributes[i].Name);
+                namePointers[i] = ptr;
+                nativeAttributes[i] = new NativeMeshAttribute
+                {
+                    Type = (NativeMeshAttributeType)attributes[i].Type,
+                    Offset = checked((uint)attributes[i].Offset),
+                    Name = ptr
+                };
+            }
+
+            for (var i = 0; i < varyings.Length; i++)
+            {
+                if (string.IsNullOrWhiteSpace(varyings[i].Name))
+                {
+                    throw new ArgumentException("Mesh varying names must be non-empty.", nameof(varyings));
+                }
+
+                var ptr = Marshal.StringToCoTaskMemUTF8(varyings[i].Name);
+                namePointers[attributes.Length + i] = ptr;
+                nativeVaryings[i] = new NativeMeshVarying
+                {
+                    Type = (NativeMeshVaryingType)varyings[i].Type,
+                    Name = ptr
+                };
+            }
+
+            vertexShaderPtr = Marshal.StringToCoTaskMemUTF8(vertexShader);
+            fragmentShaderPtr = Marshal.StringToCoTaskMemUTF8(fragmentShader);
+
+            Span<byte> error = stackalloc byte[4096];
+            fixed (NativeMeshAttribute* attributePtr = nativeAttributes)
+            fixed (NativeMeshVarying* varyingPtr = nativeVaryings)
+            fixed (byte* errorPtr = error)
+            {
+                var handle = NativeMethods.MeshSpecCreate(
+                    attributePtr,
+                    nativeAttributes.Length,
+                    vertexStride,
+                    varyingPtr,
+                    nativeVaryings.Length,
+                    (byte*)vertexShaderPtr,
+                    (byte*)fragmentShaderPtr,
+                    errorPtr,
+                    error.Length);
+
+                if (handle.IsInvalid)
+                {
+                    handle.Dispose();
+                    var message = Marshal.PtrToStringUTF8((nint)errorPtr);
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(message)
+                        ? "Native Skia mesh specification creation failed."
+                        : message);
+                }
+
+                return new SkiaNativeMeshSpecification(handle);
+            }
+        }
+        finally
+        {
+            foreach (var ptr in namePointers)
+            {
+                if (ptr != 0)
+                {
+                    Marshal.FreeCoTaskMem(ptr);
+                }
+            }
+
+            if (vertexShaderPtr != 0)
+            {
+                Marshal.FreeCoTaskMem(vertexShaderPtr);
+            }
+
+            if (fragmentShaderPtr != 0)
+            {
+                Marshal.FreeCoTaskMem(fragmentShaderPtr);
+            }
+        }
+    }
+
+    public unsafe bool TryGetUniform(string name, out SkiaNativeMeshUniformInfo info)
+    {
+        ObjectDisposedException.ThrowIf(_handle is null, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        var namePtr = Marshal.StringToCoTaskMemUTF8(name);
+        try
+        {
+            var found = NativeMethods.MeshSpecGetUniform(_handle, (byte*)namePtr, out var nativeInfo) != 0;
+            info = found
+                ? new SkiaNativeMeshUniformInfo(
+                    (SkiaNativeMeshUniformType)nativeInfo.Type,
+                    checked((int)nativeInfo.Count),
+                    nativeInfo.Flags,
+                    checked((int)nativeInfo.Offset),
+                    checked((int)nativeInfo.Size))
+                : default;
+            return found;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(namePtr);
+        }
+    }
+
+    public void Dispose()
+    {
+        var handle = _handle;
+        if (handle is null)
+        {
+            return;
+        }
+
+        _handle = null;
+        handle.Dispose();
+    }
+}
+
+/// <summary>
+/// Reusable native Skia custom mesh with GPU-backed buffers when the active backend has a GPU context.
+/// </summary>
+public sealed class SkiaNativeMesh : IDisposable
+{
+    private readonly NativeContextHandle? _context;
+    private readonly SkiaNativeMeshSpecification _specification;
+    private NativeMeshHandle? _handle;
+
+    internal SkiaNativeMesh(NativeMeshHandle handle, NativeContextHandle? context, SkiaNativeMeshSpecification specification)
+    {
+        _handle = handle;
+        _context = context;
+        _specification = specification;
+    }
+
+    public bool IsDisposed => _handle is null;
+
+    internal NativeMeshHandle NativeHandle
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_handle is null, this);
+            return _handle;
+        }
+    }
+
+    public unsafe void UpdateVertices<TVertex>(ReadOnlySpan<TVertex> vertices)
+        where TVertex : unmanaged
+    {
+        var bytes = MemoryMarshal.AsBytes(vertices);
+        UpdateVertices(bytes, vertices.Length);
+    }
+
+    public unsafe void UpdateVertices(ReadOnlySpan<byte> vertexBytes, int vertexCount)
+    {
+        ObjectDisposedException.ThrowIf(_handle is null, this);
+        if (vertexBytes.IsEmpty || vertexCount < 3)
+        {
+            throw new ArgumentException("A mesh requires at least three vertices.", nameof(vertexBytes));
+        }
+
+        if (vertexBytes.Length % 4 != 0)
+        {
+            throw new ArgumentException("Vertex data size must be 4-byte aligned.", nameof(vertexBytes));
+        }
+
+        fixed (byte* vertexPtr = vertexBytes)
+        {
+            if (NativeMethods.MeshUpdateVertices(GetContextHandle(), _handle, vertexPtr, 0, vertexBytes.Length, vertexCount) == 0)
+            {
+                throw new InvalidOperationException("Native Skia mesh vertex update failed.");
+            }
+        }
+
+        GC.KeepAlive(_context);
+    }
+
+    public unsafe void UpdateIndices(ReadOnlySpan<ushort> indices)
+    {
+        ObjectDisposedException.ThrowIf(_handle is null, this);
+        if (indices.Length < 3)
+        {
+            throw new ArgumentException("An indexed mesh requires at least three indices.", nameof(indices));
+        }
+
+        if ((indices.Length * sizeof(ushort)) % 4 != 0)
+        {
+            throw new ArgumentException("Index data size must be 4-byte aligned for GPU updates.", nameof(indices));
+        }
+
+        fixed (ushort* indexPtr = indices)
+        {
+            if (NativeMethods.MeshUpdateIndices(GetContextHandle(), _handle, indexPtr, 0, indices.Length) == 0)
+            {
+                throw new InvalidOperationException("Native Skia mesh index update failed.");
+            }
+        }
+
+        GC.KeepAlive(_context);
+    }
+
+    public unsafe void UpdateUniforms(ReadOnlySpan<byte> uniforms)
+    {
+        ObjectDisposedException.ThrowIf(_handle is null, this);
+        if (_specification.UniformSize > 0 && uniforms.Length < _specification.UniformSize)
+        {
+            throw new ArgumentException("Uniform data is smaller than the mesh specification requires.", nameof(uniforms));
+        }
+
+        fixed (byte* uniformPtr = uniforms)
+        {
+            if (NativeMethods.MeshUpdateUniforms(_handle, uniforms.IsEmpty ? null : uniformPtr, uniforms.Length) == 0)
+            {
+                throw new InvalidOperationException("Native Skia mesh uniform update failed.");
+            }
+        }
+    }
+
+    public void SetBounds(Rect bounds)
+    {
+        ObjectDisposedException.ThrowIf(_handle is null, this);
+        if (NativeMethods.MeshSetBounds(_handle, (float)bounds.Left, (float)bounds.Top, (float)bounds.Right, (float)bounds.Bottom) == 0)
+        {
+            throw new InvalidOperationException("Native Skia mesh bounds update failed.");
+        }
+    }
+
+    public void Dispose()
+    {
+        var handle = _handle;
+        if (handle is null)
+        {
+            return;
+        }
+
+        _handle = null;
+        handle.Dispose();
+    }
+
+    private nint GetContextHandle() => _context?.DangerousGetHandle() ?? 0;
 }
 
 /// <summary>
@@ -722,17 +1190,20 @@ public readonly struct SkiaNativePathCommand
 internal sealed class SkiaNativeApiLeaseFeature : ISkiaNativeApiLeaseFeature
 {
     private readonly NativeSessionHandle _session;
+    private readonly NativeContextHandle? _context;
     private readonly int _initialCapacity;
     private readonly Func<CommandBufferFlushResult> _flushPendingCommands;
     private readonly Action<CommandBufferFlushResult> _reportFlush;
 
     public SkiaNativeApiLeaseFeature(
         NativeSessionHandle session,
+        NativeContextHandle? context,
         int initialCapacity,
         Func<CommandBufferFlushResult> flushPendingCommands,
         Action<CommandBufferFlushResult> reportFlush)
     {
         _session = session;
+        _context = context;
         _initialCapacity = initialCapacity;
         _flushPendingCommands = flushPendingCommands;
         _reportFlush = reportFlush;
@@ -741,7 +1212,7 @@ internal sealed class SkiaNativeApiLeaseFeature : ISkiaNativeApiLeaseFeature
     public SkiaNativeApiLease Lease()
     {
         _reportFlush(_flushPendingCommands());
-        return new SkiaNativeApiLease(new SkiaNativeDirectCanvas(_session, _initialCapacity, _reportFlush));
+        return new SkiaNativeApiLease(new SkiaNativeDirectCanvas(_session, _context, _initialCapacity, _reportFlush));
     }
 }
 

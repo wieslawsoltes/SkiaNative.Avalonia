@@ -54,6 +54,9 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(LibraryName, EntryPoint = "skn_session_draw_path_stream_mesh")]
     internal static partial int SessionDrawPathStreamMesh(NativeSessionHandle session, NativePathStreamMeshHandle mesh);
 
+    [LibraryImport(LibraryName, EntryPoint = "skn_session_draw_mesh")]
+    internal static partial int SessionDrawMesh(NativeSessionHandle session, NativeMeshHandle mesh, nint shader, NativeColor color, uint flags);
+
     [LibraryImport(LibraryName, EntryPoint = "skn_session_draw_path_fills")]
     internal static partial int SessionDrawPathFills(NativeSessionHandle session, NativePathFillCommand* commands, int commandCount);
 
@@ -179,6 +182,67 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(LibraryName, EntryPoint = "skn_path_stream_mesh_destroy")]
     [SuppressGCTransition]
     internal static partial void PathStreamMeshDestroy(nint mesh);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_spec_create")]
+    internal static partial NativeMeshSpecificationHandle MeshSpecCreate(
+        NativeMeshAttribute* attributes,
+        int attributeCount,
+        int vertexStride,
+        NativeMeshVarying* varyings,
+        int varyingCount,
+        byte* vertexSksl,
+        byte* fragmentSksl,
+        byte* error,
+        int errorCapacity);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_spec_get_stride")]
+    [SuppressGCTransition]
+    internal static partial int MeshSpecGetStride(NativeMeshSpecificationHandle spec);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_spec_get_uniform_size")]
+    [SuppressGCTransition]
+    internal static partial int MeshSpecGetUniformSize(NativeMeshSpecificationHandle spec);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_spec_get_uniform")]
+    internal static partial int MeshSpecGetUniform(NativeMeshSpecificationHandle spec, byte* name, out NativeMeshUniformInfo info);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_spec_destroy")]
+    [SuppressGCTransition]
+    internal static partial void MeshSpecDestroy(nint spec);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_create")]
+    internal static partial NativeMeshHandle MeshCreate(
+        nint context,
+        NativeMeshSpecificationHandle spec,
+        NativeMeshMode mode,
+        byte* vertices,
+        int vertexBytes,
+        int vertexCount,
+        ushort* indices,
+        int indexCount,
+        byte* uniforms,
+        int uniformBytes,
+        float left,
+        float top,
+        float right,
+        float bottom);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_update_vertices")]
+    internal static partial int MeshUpdateVertices(nint context, NativeMeshHandle mesh, byte* vertices, int byteOffset, int byteCount, int vertexCount);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_update_indices")]
+    internal static partial int MeshUpdateIndices(nint context, NativeMeshHandle mesh, ushort* indices, int indexOffset, int indexCount);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_update_uniforms")]
+    internal static partial int MeshUpdateUniforms(NativeMeshHandle mesh, byte* uniforms, int uniformBytes);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_set_bounds")]
+    [SuppressGCTransition]
+    internal static partial int MeshSetBounds(NativeMeshHandle mesh, float left, float top, float right, float bottom);
+
+    [LibraryImport(LibraryName, EntryPoint = "skn_mesh_destroy")]
+    [SuppressGCTransition]
+    internal static partial void MeshDestroy(nint mesh);
 
     [LibraryImport(LibraryName, EntryPoint = "skn_shader_create_linear")]
     internal static partial NativeShaderHandle ShaderCreateLinear(float x0, float y0, float x1, float y1, NativeGradientStop* stops, int stopCount, NativeGradientSpreadMethod spreadMethod);

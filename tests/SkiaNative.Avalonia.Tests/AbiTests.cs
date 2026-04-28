@@ -38,6 +38,68 @@ public sealed class AbiTests
     }
 
     [Fact]
+    public void NativeMeshLayouts_AreStableEnoughForCAbi()
+    {
+        Assert.Equal(IntPtr.Size == 8 ? 16 : 12, Marshal.SizeOf<NativeMeshAttribute>());
+        Assert.Equal(IntPtr.Size == 8 ? 16 : 8, Marshal.SizeOf<NativeMeshVarying>());
+        Assert.Equal(20, Marshal.SizeOf<NativeMeshUniformInfo>());
+        Assert.Equal(IntPtr.Size == 8 ? 8 : 4, Marshal.OffsetOf<NativeMeshAttribute>(nameof(NativeMeshAttribute.Name)).ToInt32());
+        Assert.Equal(IntPtr.Size == 8 ? 8 : 4, Marshal.OffsetOf<NativeMeshVarying>(nameof(NativeMeshVarying.Name)).ToInt32());
+        Assert.Equal(12, Marshal.OffsetOf<NativeMeshUniformInfo>(nameof(NativeMeshUniformInfo.Offset)).ToInt32());
+    }
+
+    [Fact]
+    public void NativeMeshSpecification_CompilesShaderAndReflectsUniforms()
+    {
+        var nativeLibraryPath = FindNativeLibrary();
+        Assert.SkipUnless(nativeLibraryPath is not null, "Native dylib artifacts are required for native mesh ABI smoke tests.");
+
+        NativeLibraryResolver.Configure(new SkiaNativeOptions
+        {
+            NativeLibraryPath = nativeLibraryPath
+        });
+
+        var attributes = new[]
+        {
+            new SkiaNativeMeshAttribute(SkiaNativeMeshAttributeType.Float2, 0, "position"),
+            new SkiaNativeMeshAttribute(SkiaNativeMeshAttributeType.Float2, 8, "local")
+        };
+        var varyings = new[]
+        {
+            new SkiaNativeMeshVarying(SkiaNativeMeshVaryingType.Float2, "position"),
+            new SkiaNativeMeshVarying(SkiaNativeMeshVaryingType.Float2, "local")
+        };
+
+        using var specification = SkiaNativeMeshSpecification.Create(
+            attributes,
+            16,
+            varyings,
+            """
+Varyings main(const Attributes a) {
+    Varyings v;
+    v.position = a.position;
+    v.local = a.local;
+    return v;
+}
+""",
+            """
+uniform float u_time;
+
+float2 main(const Varyings v, out half4 color) {
+    color = half4(u_time, v.local.x, v.local.y, 1.0);
+    return v.position;
+}
+""");
+
+        Assert.Equal(16, specification.Stride);
+        Assert.True(specification.UniformSize >= sizeof(float));
+        Assert.True(specification.TryGetUniform("u_time", out var uniform));
+        Assert.Equal(SkiaNativeMeshUniformType.Float, uniform.Type);
+        Assert.Equal(sizeof(float), uniform.Size);
+        Assert.InRange(uniform.Offset, 0, specification.UniformSize - sizeof(float));
+    }
+
+    [Fact]
     public void NativePathCommandLayout_IsStableEnoughForCAbi()
     {
         Assert.Equal(40, Marshal.SizeOf<NativePathCommand>());
