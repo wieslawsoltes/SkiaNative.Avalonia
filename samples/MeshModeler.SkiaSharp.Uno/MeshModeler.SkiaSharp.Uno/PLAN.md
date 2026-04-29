@@ -14,12 +14,14 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
 - [x] Implement OBJ parser for positions, UVs, normals, material libraries, material ranges, polygon faces, and negative indices.
 - [x] Implement Gaussian splat PLY parser for common 3DGS exports, including ASCII and binary little-endian files.
 - [x] Decode 3DGS `f_dc_0/1/2`, `opacity`, `scale_0/1/2`, and `rot_0..3` into color, alpha, and anisotropic covariance axes.
+- [x] Convert PLY and SOG splats from common y-down 3DGS camera space to the viewer's y-up world by reflecting positions and covariance axes on Y.
 - [x] Stream binary PLY records with byte-offset decoding and pooled buffers instead of decoding every property into temporary objects.
 - [x] Implement PlayCanvas SOG v2 loading from `.sog` zip bundles, SOG directories, or unbundled `meta.json`.
-- [x] Decode SOG `means`, `scales`, `quats`, and `sh0` image/codebook data into the same native splat representation as PLY, including log-scale codebooks emitted by `splat-transform`.
+- [x] Decode SOG `means`, `scales`, `quats`, and `sh0` image/codebook data into the same native splat representation as PLY, including original-order smallest-three quaternions and log-scale codebooks emitted by `splat-transform`.
 - [x] Add optional bounded Gaussian splat import LOD via `MESHMODELER_MAX_SPLATS`; default import keeps all readable source splats.
 - [x] Submit all visible Gaussian splats as far-to-near `SKMesh` batches and cache stable-camera splat batches.
 - [x] Add a procedural Gaussian splat cloud sample and `MESHMODELER_PLY` / `MESHMODELER_SOG` / `MESHMODELER_SPLAT` startup hooks.
+- [x] Replace fixed camera zoom clamps with radius-scaled near/far zoom bounds for detailed inspection and wide context views.
 - [x] Ignore common Blender showcase scene-helper materials so large OBJ exports such as Bugatti load focused on the actual model instead of lights/backdrop planes.
 - [x] Implement MTL parser support for `Ka`, `Kd`, `Ks`, `Ke`, `Ns`, `d`, `Tr`, and `map_Kd`.
 - [x] Implement orbit, pan, and zoom controls.

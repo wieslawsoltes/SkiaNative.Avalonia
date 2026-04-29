@@ -80,7 +80,7 @@ dotnet run \
 
 - Left drag: orbit the camera.
 - Right or middle drag: pan the camera target.
-- Mouse wheel: zoom.
+- Mouse wheel: zoom with radius-scaled bounds, allowing close inspection of splat/model details and wide context views.
 - `Load Splats`: load a Gaussian splat cloud from a local `.ply`, `.sog`, or SOG `meta.json` file.
 - `Splats`: load the built-in procedural Gaussian splat cloud.
 - `E`: toggle vertex edit mode. Editing is disabled for Gaussian splat clouds because splats are oriented density kernels, not mesh vertices.
@@ -192,15 +192,16 @@ The sample can load and render 3D Gaussian Splatting PLY and PlayCanvas SOG file
 1. The PLY loader reads each splat position, color, opacity, log-scale, and quaternion rotation.
 2. Binary PLY uses record-stride offsets and `BinaryPrimitives` over pooled 4 MiB buffers, so unused high-order SH properties such as `f_rest_*` are skipped instead of decoded.
 3. The SOG loader reads PlayCanvas SOG v2 `meta.json`, decodes lossless `means`, `scales`, `quats`, and `sh0` images through Skia, and supports both zipped and unbundled layouts.
-4. When `MESHMODELER_MAX_SPLATS` is set, very large files are sampled at import time with a deterministic stride cap.
-5. SH DC color coefficients are converted with `rgb = clamp(0.5 + 0.28209479 * f_dc, 0, 1)`.
-6. PLY opacity is converted with sigmoid, matching common 3DGS training output; SOG uses the `sh0` alpha channel directly.
-7. Log scales are exponentiated for PLY. SOG scale codebooks are treated as linear only when all entries are positive; `splat-transform` SOG files with non-positive scale codebook entries are detected as log-scale codebooks and exponentiated.
-8. Quaternion rotations are expanded into covariance basis axes.
-9. The current camera projects each 3D covariance axis into screen-space covariance.
-10. The renderer eigen-decomposes the 2D covariance and emits one oriented quad per visible splat.
-11. A SkSL fragment shader evaluates Gaussian falloff from local quad coordinates and outputs premultiplied alpha.
-12. All visible splats are sorted far-to-near and cached as 65k-safe indexed `SKMesh` submissions.
+4. PLY and SOG splats are converted from common y-down 3DGS camera space to the sample viewer's y-up world by reflecting position and covariance axes on Y.
+5. When `MESHMODELER_MAX_SPLATS` is set, very large files are sampled at import time with a deterministic stride cap.
+6. SH DC color coefficients are converted with `rgb = clamp(0.5 + 0.28209479 * f_dc, 0, 1)`.
+7. PLY opacity is converted with sigmoid, matching common 3DGS training output; SOG uses the `sh0` alpha channel directly.
+8. Log scales are exponentiated for PLY. SOG scale codebooks are treated as linear only when all entries are positive; `splat-transform` SOG files with non-positive scale codebook entries are detected as log-scale codebooks and exponentiated.
+9. Quaternion rotations are expanded into covariance basis axes. SOG smallest-three quaternions are reconstructed in original `rot_0..rot_3` order so SOG and source PLY files render with matching covariance orientation.
+10. The current camera projects each 3D covariance axis into screen-space covariance.
+11. The renderer eigen-decomposes the 2D covariance and emits one oriented quad per visible splat.
+12. A SkSL fragment shader evaluates Gaussian falloff from local quad coordinates and outputs premultiplied alpha.
+13. All visible splats are sorted far-to-near and cached as 65k-safe indexed `SKMesh` submissions.
 
 Supported standard 3DGS PLY properties:
 
