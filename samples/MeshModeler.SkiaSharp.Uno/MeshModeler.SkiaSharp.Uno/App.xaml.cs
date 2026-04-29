@@ -26,7 +26,7 @@ public partial class App : Application
         {
             Title = "Mesh Modeler SkiaSharp Uno"
         };
-#if DEBUG
+#if DEBUG && USE_UNO_STUDIO
         MainWindow.UseStudio();
 #endif
 

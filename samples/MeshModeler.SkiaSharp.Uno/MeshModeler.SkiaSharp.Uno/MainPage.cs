@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using MeshModeler.SkiaSharp.Uno.Controls;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
@@ -35,6 +36,7 @@ public sealed partial class MainPage : Page
     {
         _surface.StatsUpdated += OnStatsUpdated;
         Content = BuildContent();
+        TryLoadStartupModel();
     }
 
     private Grid BuildContent()
@@ -102,7 +104,7 @@ public sealed partial class MainPage : Page
                 },
                 new TextBlock
                 {
-                    Text = "OBJ loading, orbit/pan/zoom controls, vertex editing, UV texture coordinates, depth sorting, and shader-driven depth/normal visualization.",
+                    Text = "OBJ loading, Gaussian splat PLY loading, orbit/pan/zoom controls, vertex editing, UV texture coordinates, depth sorting, and shader-driven visualization.",
                     FontSize = 14,
                     Foreground = Solid(0xFFB2C2D8)
                 }
@@ -129,10 +131,16 @@ public sealed partial class MainPage : Page
                     SectionTitle("Model"),
                     ButtonRow(
                         Button("Load OBJ", OnLoadObjClicked),
+                        Button("Load PLY", OnLoadPlyClicked),
+                        Button("Splats", (_, _) => _surface.LoadSampleSplats())),
+                    ButtonRow(
                         Button("Torus", (_, _) => _surface.LoadSampleTorus()),
                         Button("Cube", (_, _) => _surface.LoadSampleCube())),
                     ButtonRow(
                         Button("Edit", (_, _) => _surface.ToggleEditMode()),
+                        Button("Handles", (_, _) => _surface.ToggleVertexHandles()),
+                        Button("Mesh Grid", (_, _) => _surface.ToggleMeshGrid())),
+                    ButtonRow(
                         Button("UV", (_, _) => _surface.SetShadingMode(0)),
                         Button("Depth", (_, _) => _surface.SetShadingMode(1)),
                         Button("Normals", (_, _) => _surface.SetShadingMode(2))),
@@ -158,7 +166,7 @@ public sealed partial class MainPage : Page
                     Divider(),
                     new TextBlock
                     {
-                        Text = "Mouse: left drag orbits, right/middle drag pans, wheel zooms. Press E for edit mode, then click a vertex and drag it in the camera plane. Delete resets selected vertex. F/R resets view. 1/2/3 switch UV/depth/normal shader modes.",
+                        Text = "Mouse: left drag orbits, right/middle drag pans, wheel zooms. Load OBJ for mesh editing or PLY for Gaussian splats. Press E for edit mode, H toggles vertex handles, G toggles mesh grid, then click a vertex and drag it in the camera plane. Delete resets selected vertex. F/R resets view. 1/2/3 switch material/depth/normal shader modes.",
                         TextWrapping = TextWrapping.Wrap,
                         Foreground = Solid(0xFF9DAEC4)
                     }
@@ -179,12 +187,84 @@ public sealed partial class MainPage : Page
                 return;
             }
 
-            var text = await FileIO.ReadTextAsync(file);
-            _surface.LoadObjText(text, file.Name);
+            if (!string.IsNullOrWhiteSpace(file.Path) && File.Exists(file.Path))
+            {
+                _surface.LoadObjFile(file.Path);
+            }
+            else
+            {
+                var text = await FileIO.ReadTextAsync(file);
+                _surface.LoadObjText(text, file.Name);
+            }
         }
         catch (Exception ex)
         {
             _status.Text = $"OBJ load failed: {ex.Message}";
+        }
+    }
+
+    private async void OnLoadPlyClicked(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new FileOpenPicker();
+            picker.FileTypeFilter.Add(".ply");
+            var file = await picker.PickSingleFileAsync();
+            if (file is null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(file.Path) && File.Exists(file.Path))
+            {
+                _surface.LoadGaussianSplatFile(file.Path);
+            }
+            else
+            {
+                _status.Text = "PLY load failed: Uno file picker did not provide a local path for streaming binary Gaussian splats.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _status.Text = $"PLY load failed: {ex.Message}";
+        }
+    }
+
+    private void TryLoadStartupModel()
+    {
+        var splatPath = Environment.GetEnvironmentVariable("MESHMODELER_PLY");
+        if (string.IsNullOrWhiteSpace(splatPath))
+        {
+            splatPath = Environment.GetEnvironmentVariable("MESHMODELER_SPLAT");
+        }
+
+        if (!string.IsNullOrWhiteSpace(splatPath) && File.Exists(splatPath))
+        {
+            try
+            {
+                _surface.LoadGaussianSplatFile(splatPath);
+                return;
+            }
+            catch (Exception ex)
+            {
+                _status.Text = $"Startup PLY load failed: {ex.Message}";
+                return;
+            }
+        }
+
+        var path = Environment.GetEnvironmentVariable("MESHMODELER_OBJ");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            _surface.LoadObjFile(path);
+        }
+        catch (Exception ex)
+        {
+            _status.Text = $"Startup OBJ load failed: {ex.Message}";
         }
     }
 
