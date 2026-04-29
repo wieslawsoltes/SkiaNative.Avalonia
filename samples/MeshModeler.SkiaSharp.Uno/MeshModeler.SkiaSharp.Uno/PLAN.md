@@ -14,7 +14,12 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
 - [x] Implement OBJ parser for positions, UVs, normals, material libraries, material ranges, polygon faces, and negative indices.
 - [x] Implement Gaussian splat PLY parser for common 3DGS exports, including ASCII and binary little-endian files.
 - [x] Decode 3DGS `f_dc_0/1/2`, `opacity`, `scale_0/1/2`, and `rot_0..3` into color, alpha, and anisotropic covariance axes.
-- [x] Add a procedural Gaussian splat cloud sample and `MESHMODELER_PLY` / `MESHMODELER_SPLAT` startup hooks.
+- [x] Stream binary PLY records with byte-offset decoding and pooled buffers instead of decoding every property into temporary objects.
+- [x] Implement PlayCanvas SOG v2 loading from `.sog` zip bundles, SOG directories, or unbundled `meta.json`.
+- [x] Decode SOG `means`, `scales`, `quats`, and `sh0` image/codebook data into the same native splat representation as PLY, including log-scale codebooks emitted by `splat-transform`.
+- [x] Add optional bounded Gaussian splat import LOD via `MESHMODELER_MAX_SPLATS`; default import keeps all readable source splats.
+- [x] Submit all visible Gaussian splats as far-to-near `SKMesh` batches and cache stable-camera splat batches.
+- [x] Add a procedural Gaussian splat cloud sample and `MESHMODELER_PLY` / `MESHMODELER_SOG` / `MESHMODELER_SPLAT` startup hooks.
 - [x] Ignore common Blender showcase scene-helper materials so large OBJ exports such as Bugatti load focused on the actual model instead of lights/backdrop planes.
 - [x] Implement MTL parser support for `Ka`, `Kd`, `Ks`, `Ke`, `Ns`, `d`, `Tr`, and `map_Kd`.
 - [x] Implement orbit, pan, and zoom controls.
@@ -48,7 +53,8 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
    - `GaussianSplatCloud` stores normalized splat positions, covariance axes, colors, alpha, source format, and bounds.
    - OBJ import normalizes loaded models to a predictable unit scale.
    - OBJ import skips common Blender scene-helper materials (`Studio_Lights`, `sun`, `back_drop`) and computes bounds from referenced triangle vertices.
-   - PLY import supports common 3DGS fields, RGB/alpha/direct-scale fallbacks, and normalizes captures to a predictable unit radius.
+   - PLY import supports common 3DGS fields, RGB/alpha/direct-scale fallbacks, optional bounded import LOD, and normalizes captures to a predictable unit radius.
+   - SOG import supports PlayCanvas SOG v2 `meta.json`, zipped `.sog` bundles, unbundled image directories, position unlog decode, linear or log scale codebooks, color codebooks, smallest-three quaternions, and `sh0` alpha.
    - Vertex edits mutate model-space positions and recompute normals.
 
 2. Camera layer
@@ -69,7 +75,8 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
    - `uniform shader diffuseTexture` is bound through `ReadOnlySpan<SKRuntimeEffectChild>` only for textured draw batches.
    - `SKMesh.MakeIndexed` submits one or more material/texture-aware 65k-safe indexed triangle mesh batches.
    - Gaussian splat rendering projects 3D covariance axes into screen-space covariance, derives ellipse axes, emits one quad per visible splat, and uses SkSL to evaluate premultiplied Gaussian density.
-   - Gaussian splat batches are sorted far-to-near and split at the same 65k vertex/index limits as mesh batches.
+   - Gaussian splat rendering projects every loaded splat, submits all visible splats, sorts them far-to-near, and caches resulting `SKMesh` batches until the camera or viewport changes.
+   - Gaussian splat batches are split at the same 65k vertex/index limits as mesh batches.
 
 ## Remaining Work
 
@@ -79,5 +86,5 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
 - Add clipping against the near plane instead of whole-triangle culling in the depth-sorted path and vertex-shader near-plane clamping in the cached path.
 - Add optional software z-buffer path for exact depth with interpenetrating triangles if this sample needs correctness beyond painter sorting.
 - Add optional tile/bin acceleration for projected mesh sorting if large animated models need lower camera-motion rebuild cost.
-- Add accelerated Gaussian splat binning/culling if very large captures need better than full-frame CPU sort.
+- Add tile/bin accelerated Gaussian splat culling and approximate per-tile ordering if very large captures need better camera-motion rebuild cost.
 - Add spherical harmonics levels above DC color for production-quality Gaussian splat lighting.

@@ -11,8 +11,10 @@ The sample demonstrates a pragmatic way to build a lightweight model editor on t
 - Built-in procedural torus, built-in cube OBJ model, and built-in procedural Gaussian splat cloud.
 - OBJ file loading for `v`, `vt`, `vn`, `mtllib`, `usemtl`, and polygonal `f` records, triangulated with a fan.
 - Gaussian splat PLY loading for common 3D Gaussian Splatting exports with `x/y/z`, `f_dc_0/1/2`, `opacity`, `scale_0/1/2`, and `rot_0..3` properties.
-- ASCII and binary little-endian PLY splat parsing, with RGB/alpha/direct-scale fallbacks for non-standard exporters.
-- Gaussian splats are rendered as camera-projected anisotropic `SKMesh` quads with a Gaussian SkSL fragment shader and far-to-near painter sorting.
+- PlayCanvas SOG v2 loading from `.sog` zip bundles, unbundled `meta.json`, or SOG directories.
+- Streaming binary little-endian PLY parsing that extracts only required splat fields, supports optional import LOD, and avoids loading multi-gigabyte PLY files into memory.
+- ASCII PLY parsing fallback, with RGB/alpha/direct-scale fallbacks for non-standard exporters.
+- Gaussian splats are rendered as camera-projected anisotropic `SKMesh` quads with a Gaussian SkSL fragment shader, all-visible splat submission, far-to-near ordering, and cached static-camera batches.
 - Blender scene-helper materials such as `Studio_Lights`, `sun`, and `back_drop` are ignored so exported showcase scenes focus on model geometry.
 - Material-aware UV shading using OBJ material colors, `map_Kd` image textures, and Skia mesh child shaders.
 - MTL loading for diffuse color, ambient/specular/emissive color, alpha, shininess, and diffuse texture maps.
@@ -48,14 +50,22 @@ MESHMODELER_OBJ="/path/to/model.obj" \
 dotnet run --project samples/MeshModeler.SkiaSharp.Uno/MeshModeler.SkiaSharp.Uno/MeshModeler.SkiaSharp.Uno.csproj
 ```
 
-Load a Gaussian splat PLY at startup:
+Load a Gaussian splat PLY or SOG at startup:
 
 ```bash
-MESHMODELER_PLY="/path/to/scene.ply" \
+MESHMODELER_SPLAT="/path/to/scene.ply" \
 dotnet run --project samples/MeshModeler.SkiaSharp.Uno/MeshModeler.SkiaSharp.Uno/MeshModeler.SkiaSharp.Uno.csproj
 ```
 
-`MESHMODELER_SPLAT` is accepted as an alias for `MESHMODELER_PLY`.
+`MESHMODELER_PLY` and `MESHMODELER_SOG` are accepted as format-specific aliases. SOG inputs can be a `.sog` zip file, a `meta.json` file, or a directory containing `meta.json` and the referenced images.
+
+By default, Gaussian splat captures import all readable splats. Set `MESHMODELER_MAX_SPLATS` when you explicitly want a bounded representative import LOD for very large captures:
+
+```bash
+MESHMODELER_MAX_SPLATS=1500000 \
+MESHMODELER_SPLAT="/path/to/scene.sog" \
+dotnet run --project samples/MeshModeler.SkiaSharp.Uno/MeshModeler.SkiaSharp.Uno/MeshModeler.SkiaSharp.Uno.csproj
+```
 
 If the local package source is elsewhere:
 
@@ -71,7 +81,7 @@ dotnet run \
 - Left drag: orbit the camera.
 - Right or middle drag: pan the camera target.
 - Mouse wheel: zoom.
-- `Load PLY`: load a Gaussian splat cloud from a local `.ply` file.
+- `Load Splats`: load a Gaussian splat cloud from a local `.ply`, `.sog`, or SOG `meta.json` file.
 - `Splats`: load the built-in procedural Gaussian splat cloud.
 - `E`: toggle vertex edit mode. Editing is disabled for Gaussian splat clouds because splats are oriented density kernels, not mesh vertices.
 - `H`: toggle white vertex handles.
@@ -177,16 +187,20 @@ The renderer uses two specifications for performance. Untextured materials use a
 
 ## Gaussian Splatting
 
-The sample can load and render 3D Gaussian Splatting PLY files through the same `SKMesh` API. This is implemented as a Skia mesh technique rather than a CUDA/Metal 3DGS renderer:
+The sample can load and render 3D Gaussian Splatting PLY and PlayCanvas SOG files through the same `SKMesh` API. This is implemented as a Skia mesh technique rather than a CUDA/Metal 3DGS renderer:
 
 1. The PLY loader reads each splat position, color, opacity, log-scale, and quaternion rotation.
-2. SH DC color coefficients are converted with `rgb = clamp(0.5 + 0.28209479 * f_dc, 0, 1)`.
-3. Opacity is converted with sigmoid, matching common 3DGS training output.
-4. Log scales are exponentiated and combined with quaternion axes to form a 3D covariance basis.
-5. Every frame projects each 3D covariance axis into screen-space covariance using the current orbit camera.
-6. The renderer eigen-decomposes the 2D covariance and emits one oriented quad per visible splat.
-7. A SkSL fragment shader evaluates Gaussian falloff from local quad coordinates and outputs premultiplied alpha.
-8. Splats are sorted far-to-near and batched into 65k-safe indexed `SKMesh` submissions.
+2. Binary PLY uses record-stride offsets and `BinaryPrimitives` over pooled 4 MiB buffers, so unused high-order SH properties such as `f_rest_*` are skipped instead of decoded.
+3. The SOG loader reads PlayCanvas SOG v2 `meta.json`, decodes lossless `means`, `scales`, `quats`, and `sh0` images through Skia, and supports both zipped and unbundled layouts.
+4. When `MESHMODELER_MAX_SPLATS` is set, very large files are sampled at import time with a deterministic stride cap.
+5. SH DC color coefficients are converted with `rgb = clamp(0.5 + 0.28209479 * f_dc, 0, 1)`.
+6. PLY opacity is converted with sigmoid, matching common 3DGS training output; SOG uses the `sh0` alpha channel directly.
+7. Log scales are exponentiated for PLY. SOG scale codebooks are treated as linear only when all entries are positive; `splat-transform` SOG files with non-positive scale codebook entries are detected as log-scale codebooks and exponentiated.
+8. Quaternion rotations are expanded into covariance basis axes.
+9. The current camera projects each 3D covariance axis into screen-space covariance.
+10. The renderer eigen-decomposes the 2D covariance and emits one oriented quad per visible splat.
+11. A SkSL fragment shader evaluates Gaussian falloff from local quad coordinates and outputs premultiplied alpha.
+12. All visible splats are sorted far-to-near and cached as 65k-safe indexed `SKMesh` submissions.
 
 Supported standard 3DGS PLY properties:
 
@@ -203,7 +217,18 @@ Fallback properties:
 - `scale_x/scale_y/scale_z` or `sx/sy/sz`
 - `qw/qx/qy/qz`
 
-This path is useful for validating whether `SKMesh` can host Gaussian-style rasterization and blending. It is not a full production 3DGS renderer: there is no tile binning, no hardware z-buffer, no per-tile depth-sort acceleration, no spherical harmonics beyond DC color, and no GPU compute culling. Large captures can therefore become CPU-sort bound.
+Supported PlayCanvas SOG v2 data:
+
+- `meta.json` version `2`
+- `means.files`: low/high 8-bit RGBA images for quantized unlog position
+- `means.mins` / `means.maxs`: position decode bounds
+- `scales.files` and `scales.codebook`
+- `quats.files`: smallest-three quaternion encoding with alpha values `252..255`
+- `sh0.files` and `sh0.codebook`: DC color plus alpha
+
+The renderer currently ignores `shN` higher-order spherical harmonics because the sample splat shader only uses DC color. SOG WebP images are decoded into disposable Skia bitmaps during import instead of copied into retained managed arrays, which keeps the final retained heap closer to the PLY path.
+
+This path is useful for validating whether `SKMesh` can host Gaussian-style rasterization and blending. It is not a full production 3DGS renderer: there is no tile binning, no hardware z-buffer, no per-tile depth-sort acceleration, no spherical harmonics beyond DC color, and no GPU compute culling. Large captures therefore submit all visible splats and can become CPU/GPU bound. `MESHMODELER_MAX_SPLATS` remains available as an explicit import-memory limiter.
 
 ## OBJ Support
 
@@ -245,3 +270,6 @@ Primary source material used for this sample:
 - [SkMesh.h](https://skia.googlesource.com/skia/+/refs/heads/main/include/core/SkMesh.h)
 - [gm/mesh.cpp native mesh tests](https://skia.googlesource.com/skia/+/refs/heads/main/gm/mesh.cpp)
 - [SkCanvas reference](https://skia.googlesource.com/skia/+/1321a3d/site/user/api/SkCanvas_Reference.md)
+- [3D Gaussian Splatting for Real-Time Radiance Field Rendering](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/)
+- [StopThePop: Sorted Gaussian Splatting for View-Consistent Real-time Rendering](https://r4dl.github.io/StopThePop/)
+- [PlayCanvas SOG format](https://developer.playcanvas.com/user-manual/gaussian-splatting/formats/sog/)
