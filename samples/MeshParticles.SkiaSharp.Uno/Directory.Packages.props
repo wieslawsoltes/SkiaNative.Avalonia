@@ -1,0 +1,10 @@
+<Project ToolsVersion="15.0">
+  <PropertyGroup>
+    <SkiaSharpPr3779Version>4.147.0-pr.3779.1</SkiaSharpPr3779Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="SkiaSharp" Version="[$(SkiaSharpPr3779Version)]" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="[$(SkiaSharpPr3779Version)]" />
+  </ItemGroup>
+</Project>

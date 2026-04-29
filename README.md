@@ -215,6 +215,29 @@ dotnet run --project samples/MeshParticles.SkiaNative.Avalonia/MeshParticles.Ski
 
 This sample demonstrates the high-performance mesh API inspired by the new Skia/SkiaSharp `SkMesh` surface: a reusable `SkiaNativeMeshSpecification`, GPU-backed vertex and index buffers, reflected uniform packing, per-frame `Span<T>` vertex updates, and one direct `drawMesh` call from an Avalonia custom draw operation. It renders an animated particle field using Skia mesh vertex and fragment SkSL rather than Avalonia shapes or SkiaSharp.
 
+### Mesh Particles SkiaSharp Uno Sample
+
+Run the Uno Platform comparison sample after installing the SkiaSharp PR 3779 package artifacts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mono/SkiaSharp/main/scripts/get-skiasharp-pr.sh | bash -s -- 3779
+dotnet run --project samples/MeshParticles.SkiaSharp.Uno/MeshParticles.SkiaSharp.Uno/MeshParticles.SkiaSharp.Uno.csproj
+```
+
+This sample is intentionally self-contained and is not part of `SkiaNative.Avalonia.slnx`, because it depends on unreleased SkiaSharp v4 PR artifacts. It mirrors the `MeshParticles.SkiaNative.Avalonia` layout and exercises the SkiaSharp PR 3779 APIs: `SKMeshSpecification`, `SKMeshVertexBuffer`, `SKMeshIndexBuffer`, `SKMesh.MakeIndexed`, and `SKCanvas.DrawMesh`.
+
+Current PR 3779 caveat: the sample intentionally does not use a fallback renderer. It keeps the `SKMesh` submission active every frame. If the render surface stays empty while frame metrics update, capture that as a `DrawMesh` rasterization failure using `plan/SKIASHARP_PR3779_MESH_ISSUE.md`. A minimal offscreen raster probe also produced no pixels with the same PR package build.
+
+If the official PR build does not publish a NuGet artifact, create a local feed from the PR source and native macOS artifact first:
+
+```bash
+./eng/bootstrap-skiasharp-pr3779.sh
+```
+
+The bootstrap script patches the current PR source to avoid the observed `SKPath` lazy-builder finalizer crash in `sk_pathbuilder_detach_path` and clears the matching local NuGet cache entries after repacking.
+
+If PR 3779 publishes a newer package version, pass `-p:SkiaSharpPr3779Version=<version>`. If the package folder is not under `~/.skiasharp/hives/pr-3779/packages`, pass `-p:SkiaSharpPr3779Packages=/absolute/path/to/packages`.
+
 ## Validation
 
 ### Binding Benchmarks
