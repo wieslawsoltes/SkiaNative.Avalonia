@@ -50,6 +50,8 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
     private const int MaxSplatsPerBatch = MaxSubmittedIndices / 6;
     private const int SplatReadBufferBytes = 4 * 1024 * 1024;
     private const float MinProjectedSplatExtent = 0.35f;
+    private const float MinCameraDistance = 0.025f;
+    private const float MaxCameraDistance = 500.0f;
     private const float SphericalHarmonicsC0 = 0.28209479177387814f;
 
     private const string VertexShader = @"
@@ -627,7 +629,7 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
     {
         var delta = e.GetCurrentPoint(this).Properties.MouseWheelDelta;
         var factor = delta > 0 ? 0.88f : 1.13f;
-        _distance = Math.Clamp(_distance * factor, 1.25f, 25.0f);
+        _distance = Math.Clamp(_distance * factor, MinZoomDistance, MaxZoomDistance);
         _status = $"Zoom {_distance:F2}.";
         e.Handled = true;
         Invalidate();
@@ -1824,7 +1826,7 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
         }
 
         _target = ActiveCenter;
-        _distance = Math.Clamp(ActiveRadius * 3.2f, 2.2f, 18.0f);
+        _distance = Math.Clamp(ActiveRadius * 3.2f, MinZoomDistance, MaxZoomDistance);
         _yaw = -0.58f;
         _pitch = 0.38f;
         _selectedVertex = -1;
@@ -1833,6 +1835,8 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
     private Vec3 ActiveCenter => _splatCloud?.Center ?? _document.Center;
     private float ActiveRadius => _splatCloud?.Radius ?? _document.Radius;
     private string ActiveName => _splatCloud?.Name ?? _document.Name;
+    private float MinZoomDistance => MathF.Max(MinCameraDistance, ActiveRadius * 0.015f);
+    private float MaxZoomDistance => MathF.Max(MaxCameraDistance, ActiveRadius * 120.0f);
 
     private string ShadingModeName => _splatCloud is not null
         ? "Gaussian Splats"
@@ -2419,7 +2423,7 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
                 return false;
             }
 
-            splat = new GaussianSplat(
+            splat = ConvertSplatToViewerCoordinates(new GaussianSplat(
                 position,
                 basis0 * scale.X,
                 basis1 * scale.Y,
@@ -2427,7 +2431,7 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
                 color.X,
                 color.Y,
                 color.Z,
-                alpha);
+                alpha));
             return true;
         }
 
@@ -2576,20 +2580,20 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
             var mode = quats.Get(index, 3);
             var d = MathF.Sqrt(MathF.Max(0.0f, 1.0f - a * a - b * b - c * c));
 
-            // The alpha channel identifies the omitted component in [x, y, z, w].
+            // SOG stores the three non-largest components in original rot_0..rot_3 order.
             switch (mode)
             {
                 case 252:
-                    qx = d; qy = a; qz = b; qw = c;
+                    qw = d; qx = a; qy = b; qz = c;
                     break;
                 case 253:
-                    qx = a; qy = d; qz = b; qw = c;
+                    qw = a; qx = d; qy = b; qz = c;
                     break;
                 case 254:
-                    qx = a; qy = b; qz = d; qw = c;
+                    qw = a; qx = b; qy = d; qz = c;
                     break;
                 case 255:
-                    qx = a; qy = b; qz = c; qw = d;
+                    qw = a; qx = b; qy = c; qz = d;
                     break;
                 default:
                     qx = qy = qz = 0.0f;
@@ -2841,7 +2845,7 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
             var scale = ReadSplatScale(layout, values);
             ReadSplatRotation(layout, values, out var qw, out var qx, out var qy, out var qz);
             QuaternionToAxes(qw, qx, qy, qz, out var basis0, out var basis1, out var basis2);
-            splat = new GaussianSplat(
+            splat = ConvertSplatToViewerCoordinates(new GaussianSplat(
                 position,
                 basis0 * scale.X,
                 basis1 * scale.Y,
@@ -2849,7 +2853,7 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
                 color.X,
                 color.Y,
                 color.Z,
-                alpha);
+                alpha));
             return true;
         }
 
@@ -2874,7 +2878,7 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
             var scale = ReadSplatScale(values);
             ReadSplatRotation(values, out var qw, out var qx, out var qy, out var qz);
             QuaternionToAxes(qw, qx, qy, qz, out var basis0, out var basis1, out var basis2);
-            splat = new GaussianSplat(
+            splat = ConvertSplatToViewerCoordinates(new GaussianSplat(
                 position,
                 basis0 * scale.X,
                 basis1 * scale.Y,
@@ -2882,9 +2886,20 @@ public sealed partial class MeshModelerSurface : SKCanvasElement
                 color.X,
                 color.Y,
                 color.Z,
-                alpha);
+                alpha));
             return true;
         }
+
+        private static GaussianSplat ConvertSplatToViewerCoordinates(GaussianSplat splat)
+            => splat with
+            {
+                Position = FlipSplatY(splat.Position),
+                Axis0 = FlipSplatY(splat.Axis0),
+                Axis1 = FlipSplatY(splat.Axis1),
+                Axis2 = FlipSplatY(splat.Axis2)
+            };
+
+        private static Vec3 FlipSplatY(Vec3 value) => new(value.X, -value.Y, value.Z);
 
         private static Vec3 ReadSplatColor(PlyLayout layout, double[] values)
         {
