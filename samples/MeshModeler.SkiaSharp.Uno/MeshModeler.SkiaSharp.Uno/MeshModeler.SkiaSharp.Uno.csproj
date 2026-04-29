@@ -1,0 +1,31 @@
+<Project Sdk="Uno.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net10.0-desktop</TargetFrameworks>
+    <OutputType>Exe</OutputType>
+    <UnoSingleProject>true</UnoSingleProject>
+
+    <ApplicationTitle>Mesh Modeler SkiaSharp Uno</ApplicationTitle>
+    <ApplicationId>com.wieslawsoltes.meshmodeler.skiasharp.uno</ApplicationId>
+    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationPublisher>SkiaNative.Avalonia</ApplicationPublisher>
+    <Description>Uno Platform 3D modeling and OBJ editing sample for the SkiaSharp v4 PR 3779 SKMesh API.</Description>
+
+    <UnoFeatures>
+      CSharpMarkup;
+      SkiaRenderer;
+    </UnoFeatures>
+
+    <SkiaSharpPr3779Packages Condition="'$(SkiaSharpPr3779Packages)' == ''">$(HOME)/.skiasharp/hives/pr-3779/packages</SkiaSharpPr3779Packages>
+    <RestoreAdditionalProjectSources Condition="Exists('$(SkiaSharpPr3779Packages)')">$(RestoreAdditionalProjectSources);$(SkiaSharpPr3779Packages)</RestoreAdditionalProjectSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+  </ItemGroup>
+
+  <Target Name="WarnWhenSkiaSharpPrArtifactsAreMissing" BeforeTargets="Restore" Condition="!Exists('$(SkiaSharpPr3779Packages)')">
+    <Warning Text="SkiaSharp PR 3779 package source was not found at '$(SkiaSharpPr3779Packages)'. Run ./eng/bootstrap-skiasharp-pr3779.sh from the repository root." />
+  </Target>
+</Project>
