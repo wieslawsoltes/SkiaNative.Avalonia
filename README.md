@@ -215,6 +215,19 @@ dotnet run --project samples/MeshParticles.SkiaNative.Avalonia/MeshParticles.Ski
 
 This sample demonstrates the high-performance mesh API inspired by the new Skia/SkiaSharp `SkMesh` surface: a reusable `SkiaNativeMeshSpecification`, GPU-backed vertex and index buffers, reflected uniform packing, per-frame `Span<T>` vertex updates, and one direct `drawMesh` call from an Avalonia custom draw operation. It renders an animated particle field using Skia mesh vertex and fragment SkSL rather than Avalonia shapes or SkiaSharp.
 
+### Native C++ Mesh Modeler Sample
+
+Build and run the native macOS AppKit/MetalKit sample that links directly to the repository Skia build and renders OBJ plus Gaussian PLY/SOG/SOB files with Skia `SkMesh`:
+
+```bash
+./eng/build-native.sh osx-arm64
+cmake -S samples/MeshModeler.SkiaNative.Cpp -B artifacts/cmake/mesh-modeler-native-osx-arm64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+cmake --build artifacts/cmake/mesh-modeler-native-osx-arm64 --config Release
+open artifacts/cmake/mesh-modeler-native-osx-arm64/MeshModelerSkiaNativeCpp.app
+```
+
+The sample uses Ganesh Metal through `GrDirectContext`, wraps `MTKView` drawables as Skia GPU surfaces, uploads sorted OBJ triangles or Gaussian splat billboards into GPU-backed `SkMesh::VertexBuffer` instances, and draws with `SkCanvas::drawMesh`. It can open files from `File > Open...`, command-line arguments, or drag/drop.
+
 ### Mesh Particles SkiaSharp Uno Sample
 
 Run the Uno Platform comparison sample after installing the SkiaSharp PR 3779 package artifacts:
@@ -386,6 +399,7 @@ src/SkiaNative.Avalonia/          Managed Avalonia backend and interop layer
 native/SkiaNative.Avalonia/       C++ C ABI wrapper around Skia
 external/skia/                    Skia submodule
 samples/SkiaNative.Avalonia.Sample/  Backend validation sample
+samples/MeshModeler.SkiaNative.Cpp/  Native macOS C++ SkMesh model/splat sample
 tests/SkiaNative.Avalonia.Tests/  ABI/unit/render-focused tests
 tests/SkiaNative.Avalonia.RenderTests/  Source-linked Avalonia render-test harness
 eng/                              Native build, smoke, and memory scripts
