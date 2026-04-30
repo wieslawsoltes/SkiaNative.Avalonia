@@ -2,6 +2,8 @@
 
 Native macOS Mesh Modeler sample using AppKit, MetalKit, Skia Ganesh Metal, and the new `SkMesh` API directly from C++/Objective-C++.
 
+Gaussian splats default to a fast source-order `SkMesh` path that skips CPU depth sorting and reuses the cached vertex buffer while the camera is static. Press `M` to toggle a sorted back-to-front reference path when painter ordering matters more than rebuild cost.
+
 Supported inputs:
 
 - Wavefront OBJ meshes, including basic MTL diffuse colors and alpha.
@@ -31,3 +33,4 @@ Controls:
 - Right or middle drag: pan the view.
 - Mouse wheel or trackpad scroll: zoom.
 - `F` or `R`: reset camera yaw, pitch, zoom, and pan.
+- `M`: toggle Gaussian splats between fast source-order submission and sorted back-to-front submission.

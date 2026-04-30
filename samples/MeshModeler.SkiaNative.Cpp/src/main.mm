@@ -136,6 +136,18 @@ enum class DragMode {
     Pan,
 };
 
+enum class SplatRenderMode {
+    FastSourceOrder,
+    SortedBackToFront,
+};
+
+struct CameraRotation {
+    float cosYaw = 1.0f;
+    float sinYaw = 0.0f;
+    float cosPitch = 1.0f;
+    float sinPitch = 0.0f;
+};
+
 struct ScreenVertex {
     float x;
     float y;
@@ -224,22 +236,31 @@ Vec3 Normalize(Vec3 value, Vec3 fallback = {0.0f, 0.0f, 1.0f}) {
     return value / length;
 }
 
-Vec3 RotateYThenX(Vec3 value, float yaw, float pitch) {
-    const float cy = std::cos(yaw);
-    const float sy = std::sin(yaw);
+Vec3 RotateYThenX(Vec3 value, CameraRotation rotation) {
     const Vec3 yRotated = {
-        cy * value.x + sy * value.z,
+        rotation.cosYaw * value.x + rotation.sinYaw * value.z,
         value.y,
-        -sy * value.x + cy * value.z,
+        -rotation.sinYaw * value.x + rotation.cosYaw * value.z,
     };
-
-    const float cp = std::cos(pitch);
-    const float sp = std::sin(pitch);
     return {
         yRotated.x,
-        cp * yRotated.y - sp * yRotated.z,
-        sp * yRotated.y + cp * yRotated.z,
+        rotation.cosPitch * yRotated.y - rotation.sinPitch * yRotated.z,
+        rotation.sinPitch * yRotated.y + rotation.cosPitch * yRotated.z,
     };
+}
+
+CameraRotation MakeCameraRotation(float yaw, float pitch) {
+    return {
+        static_cast<float>(std::cos(yaw)),
+        static_cast<float>(std::sin(yaw)),
+        static_cast<float>(std::cos(pitch)),
+        static_cast<float>(std::sin(pitch)),
+    };
+}
+
+Vec3 RotateYThenX(Vec3 value, float yaw, float pitch) {
+    const CameraRotation rotation = MakeCameraRotation(yaw, pitch);
+    return RotateYThenX(value, rotation);
 }
 
 std::string ToLower(std::string value) {
@@ -1565,6 +1586,9 @@ public:
             scene_ = LoadScene(std::filesystem::path(path));
             meshBuffer_ = nullptr;
             meshBufferSize_ = 0;
+            if (scene_.kind == SceneKind::Splats) {
+                splatRenderMode_ = SplatRenderMode::FastSourceOrder;
+            }
             invalidateSplatCache();
             status_ = "Loaded " + path;
             updateSummary();
@@ -1601,6 +1625,16 @@ public:
         cameraPitch_ = -0.38f;
         cameraZoom_ = 1.0f;
         cameraPan_ = {0.0f, 0.0f};
+    }
+
+    void toggleSplatRenderMode() {
+        splatRenderMode_ = splatRenderMode_ == SplatRenderMode::FastSourceOrder
+            ? SplatRenderMode::SortedBackToFront
+            : SplatRenderMode::FastSourceOrder;
+        invalidateSplatCache();
+        status_ = splatRenderMode_ == SplatRenderMode::FastSourceOrder
+            ? "Fast splat mode: source-order SkMesh quads skip CPU depth sort."
+            : "Sorted splat mode: CPU depth sort rebuilds cached SkMesh when the camera changes.";
     }
 
     void draw(SkCanvas* canvas, GrDirectContext* context, int width, int height, double timeSeconds) {
@@ -1763,18 +1797,17 @@ float2 main(const Varyings v, out half4 color) {
 
         const float scale = static_cast<float>(std::min(width, height)) * 0.39f * cameraZoom_;
         const Vec2 center = {width * 0.5f + cameraPan_.x, height * 0.52f + cameraPan_.y};
-        const float yaw = cameraYaw_;
-        const float pitch = cameraPitch_;
+        const CameraRotation rotation = MakeCameraRotation(cameraYaw_, cameraPitch_);
         const Vec3 light = Normalize({-0.35f, 0.55f, 0.76f});
         (void)timeSeconds;
 
         drawTriangles_.clear();
         drawTriangles_.reserve(scene_.triangles.size());
         for (const auto& triangle : scene_.triangles) {
-            const Vec3 p0 = RotateYThenX(triangle.p0, yaw, pitch);
-            const Vec3 p1 = RotateYThenX(triangle.p1, yaw, pitch);
-            const Vec3 p2 = RotateYThenX(triangle.p2, yaw, pitch);
-            const Vec3 normal = Normalize(RotateYThenX(triangle.normal, yaw, pitch));
+            const Vec3 p0 = RotateYThenX(triangle.p0, rotation);
+            const Vec3 p1 = RotateYThenX(triangle.p1, rotation);
+            const Vec3 p2 = RotateYThenX(triangle.p2, rotation);
+            const Vec3 normal = Normalize(RotateYThenX(triangle.normal, rotation));
             const float diffuse = 0.28f + 0.72f * std::abs(Dot(normal, light));
             const float rim = 0.10f * std::pow(1.0f - Clamp01(std::abs(normal.z)), 2.0f);
             Color4 color = triangle.color;
@@ -1838,7 +1871,9 @@ float2 main(const Varyings v, out half4 color) {
 
         if (splatCacheMatches(width, height) && cachedSplatMesh_.isValid()) {
             canvas->drawMesh(cachedSplatMesh_, nullptr, paint);
-            renderStats_.mode = "GPU-backed cached SkMesh Gaussian splats";
+            renderStats_.mode = splatRenderMode_ == SplatRenderMode::FastSourceOrder
+                ? "GPU-backed cached SkMesh Gaussian splats (fast source order)"
+                : "GPU-backed cached SkMesh Gaussian splats (sorted)";
             renderStats_.primitiveCount = cachedSplatPrimitiveCount_;
             renderStats_.vertexCount = cachedSplatVertexCount_;
             renderStats_.vertexBytes = cachedSplatVertexBytes_;
@@ -1851,20 +1886,19 @@ float2 main(const Varyings v, out half4 color) {
         const auto projectStart = totalStart;
         const float scale = static_cast<float>(std::min(width, height)) * 0.42f * cameraZoom_;
         const Vec2 center = {width * 0.5f + cameraPan_.x, height * 0.52f + cameraPan_.y};
-        const float yaw = cameraYaw_;
-        const float pitch = cameraPitch_;
+        const CameraRotation rotation = MakeCameraRotation(cameraYaw_, cameraPitch_);
         (void)timeSeconds;
 
         splatDrawItems_.clear();
         splatDrawItems_.reserve(scene_.splats.size());
         for (const auto& splat : scene_.splats) {
-            const Vec3 center3 = RotateYThenX(splat.position, yaw, pitch);
+            const Vec3 center3 = RotateYThenX(splat.position, rotation);
             Vec2 axis0;
             Vec2 axis1;
             selectLongestAxes(
-                ProjectAxis(RotateYThenX(splat.axis0, yaw, pitch), scale),
-                ProjectAxis(RotateYThenX(splat.axis1, yaw, pitch), scale),
-                ProjectAxis(RotateYThenX(splat.axis2, yaw, pitch), scale),
+                ProjectAxis(RotateYThenX(splat.axis0, rotation), scale),
+                ProjectAxis(RotateYThenX(splat.axis1, rotation), scale),
+                ProjectAxis(RotateYThenX(splat.axis2, rotation), scale),
                 axis0,
                 axis1);
             if (LengthSquared(axis0) < 0.25f) {
@@ -1886,9 +1920,11 @@ float2 main(const Varyings v, out half4 color) {
         const auto projectEnd = Clock::now();
 
         const auto sortStart = Clock::now();
-        std::sort(splatDrawItems_.begin(), splatDrawItems_.end(), [](const SplatDrawItem& a, const SplatDrawItem& b) {
-            return a.z < b.z;
-        });
+        if (splatRenderMode_ == SplatRenderMode::SortedBackToFront) {
+            std::sort(splatDrawItems_.begin(), splatDrawItems_.end(), [](const SplatDrawItem& a, const SplatDrawItem& b) {
+                return a.z < b.z;
+            });
+        }
         const auto sortEnd = Clock::now();
 
         splatVertices_.resize(splatDrawItems_.size() * 6u);
@@ -1923,7 +1959,9 @@ float2 main(const Varyings v, out half4 color) {
         canvas->drawMesh(cachedSplatMesh_, nullptr, paint);
 
         const auto totalEnd = Clock::now();
-        renderStats_.mode = "GPU-backed cached SkMesh Gaussian splats";
+        renderStats_.mode = splatRenderMode_ == SplatRenderMode::FastSourceOrder
+            ? "GPU-backed cached SkMesh Gaussian splats (fast source order)"
+            : "GPU-backed cached SkMesh Gaussian splats (sorted)";
         renderStats_.primitiveCount = cachedSplatPrimitiveCount_;
         renderStats_.vertexCount = cachedSplatVertexCount_;
         renderStats_.vertexBytes = cachedSplatVertexBytes_;
@@ -1996,7 +2034,8 @@ float2 main(const Varyings v, out half4 color) {
             std::abs(splatCachePitch_ - cameraPitch_) < epsilon &&
             std::abs(splatCacheZoom_ - cameraZoom_) < epsilon &&
             std::abs(splatCachePanX_ - cameraPan_.x) < epsilon &&
-            std::abs(splatCachePanY_ - cameraPan_.y) < epsilon;
+            std::abs(splatCachePanY_ - cameraPan_.y) < epsilon &&
+            splatCacheRenderMode_ == splatRenderMode_;
     }
 
     void storeSplatCacheKey(int width, int height) {
@@ -2008,6 +2047,7 @@ float2 main(const Varyings v, out half4 color) {
         splatCacheZoom_ = cameraZoom_;
         splatCachePanX_ = cameraPan_.x;
         splatCachePanY_ = cameraPan_.y;
+        splatCacheRenderMode_ = splatRenderMode_;
     }
 
     void invalidateSplatCache() {
@@ -2099,7 +2139,7 @@ float2 main(const Varyings v, out half4 color) {
         canvas->drawString(cameraLine.c_str(), 28.0f, 208.0f, metricFont, textPaint);
 
         textPaint.setColor(SkColorSetRGB(54, 72, 88));
-        canvas->drawString("Left drag orbit, right/middle drag pan, wheel zoom, F/R reset, File > Open or drop OBJ/PLY/SOG/SOB", 28.0f, 228.0f, bodyFont, textPaint);
+        canvas->drawString("Left drag orbit, right/middle drag pan, wheel zoom, F/R reset, M toggle splat sort, File > Open or drop OBJ/PLY/SOG/SOB", 28.0f, 228.0f, bodyFont, textPaint);
 
         (void)height;
     }
@@ -2124,6 +2164,7 @@ float2 main(const Varyings v, out half4 color) {
     float cameraPitch_ = -0.38f;
     float cameraZoom_ = 1.0f;
     Vec2 cameraPan_ = {0.0f, 0.0f};
+    SplatRenderMode splatRenderMode_ = SplatRenderMode::FastSourceOrder;
     sk_sp<SkMeshSpecification> meshSpec_;
     sk_sp<SkMeshSpecification> splatSpec_;
     sk_sp<SkMesh::VertexBuffer> meshBuffer_;
@@ -2139,6 +2180,7 @@ float2 main(const Varyings v, out half4 color) {
     float splatCacheZoom_ = 0.0f;
     float splatCachePanX_ = 0.0f;
     float splatCachePanY_ = 0.0f;
+    SplatRenderMode splatCacheRenderMode_ = SplatRenderMode::FastSourceOrder;
     size_t cachedSplatPrimitiveCount_ = 0;
     size_t cachedSplatVertexCount_ = 0;
     size_t cachedSplatVertexBytes_ = 0;
@@ -2389,6 +2431,12 @@ std::string ToStdString(NSString* value) {
     if ([characters isEqualToString:@"f"] || [characters isEqualToString:@"r"]) {
         if (_renderer != nullptr) {
             _renderer->resetCamera();
+        }
+        return;
+    }
+    if ([characters isEqualToString:@"m"]) {
+        if (_renderer != nullptr) {
+            _renderer->toggleSplatRenderMode();
         }
         return;
     }
