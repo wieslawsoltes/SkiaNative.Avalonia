@@ -228,6 +228,18 @@ open artifacts/cmake/mesh-modeler-native-osx-arm64/MeshModelerSkiaNativeCpp.app
 
 The sample uses Ganesh Metal through `GrDirectContext`, wraps `MTKView` drawables as Skia GPU surfaces, uploads sorted OBJ triangles or Gaussian splat billboards into GPU-backed `SkMesh::VertexBuffer` instances, and draws with `SkCanvas::drawMesh`. It can open files from `File > Open...`, command-line arguments, or drag/drop.
 
+### Direct Metal Gaussian Splat Sample
+
+Build and run the native macOS AppKit/MetalKit comparison sample that renders Gaussian PLY/SOG/SOB files directly through Metal, without Skia in the render path:
+
+```bash
+cmake -S samples/GaussianSplats.Metal.Cpp -B artifacts/cmake/gaussian-splats-metal-osx-arm64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+cmake --build artifacts/cmake/gaussian-splats-metal-osx-arm64 --config Release
+open artifacts/cmake/gaussian-splats-metal-osx-arm64/GaussianSplatsMetalCpp.app
+```
+
+The sample uploads normalized Gaussian splats into one static Metal buffer and defaults to a fast weighted blended OIT path with floating-point accumulation targets and a fullscreen resolve, avoiding CPU processing and per-frame sorting. Press `M` to compare against the quality/reference path, which builds camera-depth keys and sorts splat indices in Metal compute before drawing indexed instanced triangle strips back-to-front. Perspective projection, screen-space ellipse axis selection, hardware depth coordinates, and Gaussian falloff run in Metal shaders.
+
 ### Mesh Particles SkiaSharp Uno Sample
 
 Run the Uno Platform comparison sample after installing the SkiaSharp PR 3779 package artifacts:
@@ -400,6 +412,7 @@ native/SkiaNative.Avalonia/       C++ C ABI wrapper around Skia
 external/skia/                    Skia submodule
 samples/SkiaNative.Avalonia.Sample/  Backend validation sample
 samples/MeshModeler.SkiaNative.Cpp/  Native macOS C++ SkMesh model/splat sample
+samples/GaussianSplats.Metal.Cpp/  Native macOS direct Metal Gaussian splat sample
 tests/SkiaNative.Avalonia.Tests/  ABI/unit/render-focused tests
 tests/SkiaNative.Avalonia.RenderTests/  Source-linked Avalonia render-test harness
 eng/                              Native build, smoke, and memory scripts
