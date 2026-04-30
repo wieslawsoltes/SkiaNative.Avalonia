@@ -4,14 +4,26 @@ Uno Platform desktop 3D modeling sample using SkiaSharp v4 PR 3779 `SKMesh` APIs
 
 The sample demonstrates a pragmatic way to build a lightweight model editor on top of Skia's new mesh API. `SkMesh` is still a 2D custom mesh draw operation, not a 3D engine, so this sample owns OBJ parsing, Gaussian splat parsing, camera math, hit testing, editing, material batching, and texture binding. Mesh models use an adaptive path: small and medium models are projected and far-to-near sorted in C# before being cached into 65k-safe projected `SKMesh` batches, while very large opaque material views use cached world-space `SKMesh` batches to stay interactive. Gaussian splats use the same camera-space projection model for covariance expansion.
 
+## Reusable Projects
+
+The sample is split so the reusable 3D/data logic is not coupled to Uno or SkiaSharp:
+
+| Project | Dependencies | Responsibility |
+| --- | --- | --- |
+| `MeshModeler.Core` | `net10.0` only | `Vec2`/`Vec3`, orbit camera basis, mesh projection, gaussian covariance projection, mesh documents, materials, OBJ/MTL parsing, PLY gaussian splat loading, SOG gaussian splat loading, procedural mesh/splat samples, bounds, normals, and splat normalization. |
+| `MeshModeler.SkiaSharp.Rendering` | `MeshModeler.Core`, SkiaSharp | `SKMesh` vertex ABI structs, stride constants, Skia-backed SOG RGBA image decoding, and material texture/child-shader resource caching. |
+| `MeshModeler.SkiaSharp.Uno` | Uno, SkiaSharp rendering library | `SKCanvasElement` hosting, UI controls, pointer/keyboard input, camera state, hit testing orchestration, and draw submission orchestration. |
+
+`MeshModeler.Core` deliberately has no SkiaSharp reference. PlayCanvas SOG needs image decoding for compressed texture files, so the core loader depends on an `ISogImageDecoder` abstraction. The SkiaSharp rendering library supplies `SkiaSogImageDecoder.Shared` for this sample.
+
 ## Features
 
 - Uno `SKCanvasElement` host.
 - Orbit, pan, and zoom camera controls.
 - Built-in procedural torus, built-in cube OBJ model, and built-in procedural Gaussian splat cloud.
-- OBJ file loading for `v`, `vt`, `vn`, `mtllib`, `usemtl`, and polygonal `f` records, triangulated with a fan.
-- Gaussian splat PLY loading for common 3D Gaussian Splatting exports with `x/y/z`, `f_dc_0/1/2`, `opacity`, `scale_0/1/2`, and `rot_0..3` properties.
-- PlayCanvas SOG v2 loading from `.sog` zip bundles, unbundled `meta.json`, or SOG directories.
+- Reusable `MeshModeler.Core` OBJ file loading for `v`, `vt`, `vn`, `mtllib`, `usemtl`, and polygonal `f` records, triangulated with a fan.
+- Reusable `MeshModeler.Core` Gaussian splat PLY loading for common 3D Gaussian Splatting exports with `x/y/z`, `f_dc_0/1/2`, `opacity`, `scale_0/1/2`, and `rot_0..3` properties.
+- Reusable `MeshModeler.Core` PlayCanvas SOG v2 loading from `.sog` zip bundles, unbundled `meta.json`, or SOG directories, with image decoding supplied by `MeshModeler.SkiaSharp.Rendering`.
 - Streaming binary little-endian PLY parsing that extracts only required splat fields, supports optional import LOD, and avoids loading multi-gigabyte PLY files into memory.
 - ASCII PLY parsing fallback, with RGB/alpha/direct-scale fallbacks for non-standard exporters.
 - Gaussian splats are rendered as camera-projected anisotropic `SKMesh` quads with a Gaussian SkSL fragment shader, all-visible splat submission, far-to-near ordering, and cached static-camera batches.
@@ -103,12 +115,13 @@ For this reason the sample uses this split:
 
 | Responsibility | Location |
 | --- | --- |
-| OBJ parsing | C# |
+| OBJ parsing | `MeshModeler.Core` |
 | Orbit/pan/zoom camera math | C# |
 | Vertex hit testing/editing | C# |
 | 3D-to-2D projection | C# projected stream for depth-sorted mesh and splat views; vertex SkSL for large opaque material views |
 | Material batching | C# |
-| OBJ/MTL diffuse texture loading | C# |
+| OBJ/MTL diffuse texture path parsing | `MeshModeler.Core` |
+| OBJ/MTL diffuse texture image/shader ownership | `MeshModeler.SkiaSharp.Rendering` |
 | UV texture sampling | `uniform shader` child sampled by SkSL fragment shader |
 | UV checker overlay | SkSL fragment shader |
 | Normal/depth visualization | SkSL fragment shader |
@@ -191,7 +204,7 @@ The sample can load and render 3D Gaussian Splatting PLY and PlayCanvas SOG file
 
 1. The PLY loader reads each splat position, color, opacity, log-scale, and quaternion rotation.
 2. Binary PLY uses record-stride offsets and `BinaryPrimitives` over pooled 4 MiB buffers, so unused high-order SH properties such as `f_rest_*` are skipped instead of decoded.
-3. The SOG loader reads PlayCanvas SOG v2 `meta.json`, decodes lossless `means`, `scales`, `quats`, and `sh0` images through Skia, and supports both zipped and unbundled layouts.
+3. The SOG loader reads PlayCanvas SOG v2 `meta.json` and delegates image decoding through `ISogImageDecoder`; this sample uses the SkiaSharp decoder from `MeshModeler.SkiaSharp.Rendering`.
 4. PLY and SOG splats are converted from common y-down 3DGS camera space to the sample viewer's y-up world by reflecting position and covariance axes on Y.
 5. When `MESHMODELER_MAX_SPLATS` is set, very large files are sampled at import time with a deterministic stride cap.
 6. SH DC color coefficients are converted with `rgb = clamp(0.5 + 0.28209479 * f_dc, 0, 1)`.
@@ -227,7 +240,7 @@ Supported PlayCanvas SOG v2 data:
 - `quats.files`: smallest-three quaternion encoding with alpha values `252..255`
 - `sh0.files` and `sh0.codebook`: DC color plus alpha
 
-The renderer currently ignores `shN` higher-order spherical harmonics because the sample splat shader only uses DC color. SOG WebP images are decoded into disposable Skia bitmaps during import instead of copied into retained managed arrays, which keeps the final retained heap closer to the PLY path.
+The renderer currently ignores `shN` higher-order spherical harmonics because the sample splat shader only uses DC color. SOG image files are decoded through the pluggable decoder into transient RGBA buffers during import; final retained data is the normalized `GaussianSplat[]`, matching the PLY path.
 
 This path is useful for validating whether `SKMesh` can host Gaussian-style rasterization and blending. It is not a full production 3DGS renderer: there is no tile binning, no hardware z-buffer, no per-tile depth-sort acceleration, no spherical harmonics beyond DC color, and no GPU compute culling. Large captures therefore submit all visible splats and can become CPU/GPU bound. `MESHMODELER_MAX_SPLATS` remains available as an explicit import-memory limiter.
 
@@ -249,7 +262,7 @@ Authored OBJ normals are used when present. Normals are recomputed after vertex 
 
 Bounds and camera normalization are computed from referenced triangle vertices instead of every `v` record. This matters for Blender exports that include curves, lights, backdrop planes, or other helper objects in the same OBJ file.
 
-Diffuse textures are loaded through `SKImage.FromEncodedData` instead of `SKBitmap.Decode`, because the PR 3779 macOS artifact successfully exposes encoded image decoding through `SKImage` and that object maps naturally to GPU-backed shader creation.
+Diffuse texture paths are parsed by `MeshModeler.Core`. Diffuse texture images are loaded by `MeshModeler.SkiaSharp.Rendering` through `SKImage.FromEncodedData` instead of `SKBitmap.Decode`, because the PR 3779 macOS artifact successfully exposes encoded image decoding through `SKImage` and that object maps naturally to GPU-backed shader creation.
 
 Large OBJ files are supported by chunking the world-space triangle stream into multiple indexed `SKMesh` submissions. The per-batch vertex/index count stays below the 16-bit index boundary, while the model document can contain far more source vertices and triangles. Very large opaque material-mode models use this world-space path by default because sorting more than a million projected triangles per camera change is not interactive in a UI sample.
 

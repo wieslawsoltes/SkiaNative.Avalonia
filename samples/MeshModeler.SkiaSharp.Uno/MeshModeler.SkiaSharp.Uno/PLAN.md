@@ -42,6 +42,9 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
 - [x] Render Gaussian splats as depth-sorted anisotropic `SKMesh` quad batches with Gaussian SkSL alpha falloff.
 - [x] Add `MESHMODELER_OBJ` startup load hook for large-model smoke/regression runs.
 - [x] Document Skia/SkiaSharp mesh API usage and limitations.
+- [x] Extract reusable mesh, material, OBJ/MTL, PLY, SOG, gaussian splat, vector math, camera basis, projection, covariance-to-ellipse, and procedural sample logic into `MeshModeler.Core` without any SkiaSharp or Uno dependency.
+- [x] Refactor SOG image decoding behind `ISogImageDecoder` so PlayCanvas SOG file handling remains renderer-agnostic while SkiaSharp supplies the current RGBA decoder.
+- [x] Extract reusable SkiaSharp mesh rendering support into `MeshModeler.SkiaSharp.Rendering`, including mesh vertex ABI structs, stride constants, SOG image decoding, and material texture/child-shader resource caching.
 
 ## Design Constraints
 
@@ -50,18 +53,19 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
 ## Architecture
 
 1. Model layer
+   - `MeshModeler.Core` is the reusable renderer-agnostic library. It stores positions, original positions, authored/computed normals, material-indexed triangles, material definitions, bounds, radius, gaussian splats, vector math, orbit camera basis, mesh projection, and gaussian covariance projection.
    - `MeshDocument` stores positions, original positions, authored/computed normals, material-indexed triangles, material definitions, bounds, and radius.
-   - `MeshMaterial` owns diffuse color, secondary material terms, alpha/shininess, optional encoded diffuse texture, and the shader child used by `SKMesh.MakeIndexed`.
+   - `MeshMaterial` owns diffuse color, secondary material terms, alpha/shininess, and optional diffuse texture paths only. SkiaSharp image/shader resources are intentionally not stored in the core model.
    - `GaussianSplatCloud` stores normalized splat positions, covariance axes, colors, alpha, source format, and bounds.
    - OBJ import normalizes loaded models to a predictable unit scale.
    - OBJ import skips common Blender scene-helper materials (`Studio_Lights`, `sun`, `back_drop`) and computes bounds from referenced triangle vertices.
    - PLY import supports common 3DGS fields, RGB/alpha/direct-scale fallbacks, optional bounded import LOD, and normalizes captures to a predictable unit radius.
-   - SOG import supports PlayCanvas SOG v2 `meta.json`, zipped `.sog` bundles, unbundled image directories, position unlog decode, linear or log scale codebooks, color codebooks, smallest-three quaternions, and `sh0` alpha.
+   - SOG import supports PlayCanvas SOG v2 `meta.json`, zipped `.sog` bundles, unbundled image directories, position unlog decode, linear or log scale codebooks, color codebooks, smallest-three quaternions, and `sh0` alpha. Image decoding is abstracted behind `ISogImageDecoder`.
    - Vertex edits mutate model-space positions and recompute normals.
 
 2. Camera layer
    - Orbit camera is represented by yaw, pitch, distance, and target.
-   - Camera basis is rebuilt every frame as position/forward/right/up.
+   - Camera basis is rebuilt every frame as position/forward/right/up through `CameraBasis.FromOrbit` in `MeshModeler.Core`.
    - Camera basis is sent to SKMesh as uniforms.
 
 3. Editing layer
@@ -69,6 +73,8 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
    - Dragging a selected vertex maps pointer deltas into camera right/up world-space deltas.
 
 4. Render layer
+   - `MeshModeler.SkiaSharp.Rendering` is the reusable SkiaSharp-specific library. It provides the vertex ABI structs used by `SKMeshVertexBuffer`, stride constants, SOG image decoding via `SKCodec`, and `SkiaMeshMaterialResourceCache` for `SKImage` / `SKShader` / `SKRuntimeEffectChild` ownership.
+   - The Uno control remains only the host for `SKCanvasElement`, pointer/keyboard input, camera interaction, and sample UI status publishing.
    - Mesh triangles can be projected for the current camera and sorted by average camera depth before `SKMesh` submission.
    - Projected triangle batches are cached and reused while the camera, viewport, and model remain unchanged.
    - Material mode uses projected sorting for small/medium and transparent models, then falls back to cached world-space batches for very large opaque models where CPU sorting would dominate interaction.
@@ -77,6 +83,7 @@ Build a standalone Uno Platform sample that uses SkiaSharp v4 PR 3779 `SKMesh` a
    - `uniform shader diffuseTexture` is bound through `ReadOnlySpan<SKRuntimeEffectChild>` only for textured draw batches.
    - `SKMesh.MakeIndexed` submits one or more material/texture-aware 65k-safe indexed triangle mesh batches.
    - Gaussian splat rendering projects 3D covariance axes into screen-space covariance, derives ellipse axes, emits one quad per visible splat, and uses SkSL to evaluate premultiplied Gaussian density.
+   - Mesh and gaussian projection math lives in `MeshModeler.Core`; the Uno/Skia layer converts projected corners/splats to `SKMesh` vertex buffers.
    - Gaussian splat rendering projects every loaded splat, submits all visible splats, sorts them far-to-near, and caches resulting `SKMesh` batches until the camera or viewport changes.
    - Gaussian splat batches are split at the same 65k vertex/index limits as mesh batches.
 
